@@ -1,0 +1,403 @@
+---
+title: "Analiza teniskih mečeva - Postoji li razlika u broju odigranih aseva između igrača koji su osvojili Grand Slam naslov i onih koji nisu?"
+author: "Anđelko Prskalo"
+date: "14.01.2024."
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    highlight: tango
+toc-title: "Sadržaj"
+documetclass: article
+classoption: a4paper
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Priprema radnog okruženja
+
+```{r, echo=FALSE, include=FALSE}
+# loading libraries
+library(ggplot2)
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(purrr)
+library(lubridate)
+library(fitdistrplus)
+library(univariateML)
+library(stringr)
+library(car)
+
+# setting library settings
+options(dplyr.summarise.inform = FALSE)
+```
+
+## Učitavanje podataka
+
+Podatke ćemo učitati iz CSV datoteka u listu podatkovnih okvira. Svaki podatkovni okvir sadržava podatke mečeva jedne godine. Nakon toga spajamo sve podatkove okvire u jedan te time imamo informacije o svim odigranim mečevima od 1968. do 2023. godine dostupne u jednom podatkovnom okviru. Iz tog okvira ćemo naknadno izvlačiti potrebne podatke za svrhe analize.
+
+Proces učitavanja podataka je prikazan u sljedećem bloku koda:
+
+```{r}
+df_list <- list()
+years <- c(1968:2023)
+
+for (i in years) {
+  file_name <- paste0("./ATP-Matches/atp_matches_", i, ".csv")
+  if (file.exists(file_name)) {
+    df <- read_csv(file_name,
+      col_types = "cccnccnnncccncnnncccncncncnnnnnnnnnnnnnnnnnnnnnnn",
+      show_col_types = FALSE
+    )
+    df_list[[as.character(i)]] <- df
+  } else {
+    warning(paste("File not found for year", i))
+  }
+}
+
+matches <- bind_rows(df_list)
+rm(df_list, file_name, df, i, years)
+```
+
+## Prilagodba tipova podataka
+
+Nakon učitavanja podataka, potrebno je ispraviti tipove podataka za neke stupce. Ti stupci su:
+
+* `surface` - podloga na kojoj se igrao meč: trava, zemlja, tvrda podloga, tepih (eng. grass, clay, hard, carpet)
+* `tourney_level` - razina turnira: Grand Slam, ATP Finals, ATP Masters 1000, ATP Tour, ATP Challengers
+* `tourney_date` - datum održavanja turnira
+* `winner_hand` - ruka s kojom je pobjednik igrao meč: desnoruk, lijevoruk, ambidekster, nepoznato (eng. right-handed ("R"), left-handed ("L"), ambidextrous ("A"), unknown ("U"))
+* `loser_hand` - ruka s kojom je gubitnik igrao meč (definirano isto kao i za winner_hand)
+
+Prilagodba tipova podataka je prikazana u sljedećem kodu:
+
+```{r}
+matches$surface <- factor(
+  matches$surface,
+  levels = c("Grass", "Clay", "Hard", "Carpet")
+)
+matches$tourney_level <- factor(
+  matches$tourney_level,
+  levels = c("F", "A", "D", "M", "G")
+)
+matches$tourney_date <- ymd(matches$tourney_date)
+matches$winner_hand <- factor(
+  matches$winner_hand,
+  levels = c("R", "L", "A", "U")
+)
+matches$loser_hand <- factor(
+  matches$loser_hand,
+  levels = c("R", "L", "A", "U")
+)
+```
+
+# Statistička analiza
+
+## Priprema podataka
+Potrebne su nam dvije glavne grupe u koje ćemo podijeliti igrače:
+
+* igrači s barem jednom osvojenom Grand Slam titulom
+* igrači bez osvojene Grand Slam titule (u daljnjem tekstu ćemo ih nazvati "ostali igrači")
+
+Uz te dvije glavne grupe, stvorit ćemo dodatnu grupu za ostale igrače gdje ih dodatno filtriramo tako da uklonimo igrače koji su ukupno sudjelovali u manje od 7 mečeva. Budući da uspoređujemo prosjeke odigranih asova po meču, želimo izbjeći situacije gdje bi igrači koji su odigrali samo jedan ili dva meča imali velik utjecaj na prosjek cijele grupe. Budući da je za osvajanje titule potrebno odigrati i pobijediti u barem 7 mečeva (za grand slam turnire se inicijalno izvlači 128 sudionika), smatramo da je 7 mečeva minimalna granica koju igrač mora ispuniti da bi bio uključen u usporedbu s igračima koji su osvojili Grand Slam titulu. U daljnjem tekstu ćemo se na tu grupu referirati kao "ostali igrači (n>=7)" i odvojeno ju uspoređivati s igračima koji su osvojili Grand Slam titulu.
+
+Proces izvlačenja i pripreme podataka je prikazan i komentiran u sljedećem bloku koda:
+
+```{r}
+# izrada novog okvira s podatcima o svim igračima (ID, ime, broj asova)
+all_players <- matches %>%
+  dplyr::select(winner_id, winner_name, w_ace) %>%
+  rename(id = winner_id, name = winner_name, aces = w_ace) %>%
+  bind_rows(matches %>%
+    dplyr::select(loser_id, loser_name, l_ace) %>%
+    rename(id = loser_id, name = loser_name, aces = l_ace))
+
+# uklanjanje unosa za koje ne postoje podatci o broju odigranih asova
+all_players <- all_players %>%
+  filter(!is.na(aces))
+
+# grupiranje igrača po ID-u i imenu te izračun prosjeka asova po meču (APM)
+all_players <- all_players %>%
+  group_by(id, name) %>%
+  summarise(aces = sum(aces), matches = n()) %>%
+  mutate(apm = aces / matches)
+
+# filtriranje igrača koji su odigrali >=7 mečeva
+filter_players <- all_players %>%
+  filter(matches >= 7)
+
+# izrada okvira za igrače s naslovom (pobjeda u finalu Grand Slam turnira)
+gs_winners <- matches %>%
+  filter(tourney_level == "G" & round == "F") %>%
+  dplyr::select(winner_id, winner_name) %>%
+  rename(id = winner_id, name = winner_name) %>%
+  distinct(id, name)
+
+# dodavanje stupca s prosjekom asova po meču (apm) za igrače s naslovom
+gs_winners <- gs_winners %>%
+  left_join(all_players, by = c("id", "name")) %>%
+  filter(!is.na(apm))
+
+# izrada okvira za ostale igrače (bez naslova)
+gs_others <- all_players %>%
+  filter(!id %in% gs_winners$id)
+
+# izrada okvira za ostale igrače uz uvjet da su odigrali barem 7 mečeva
+gs_filter1 <- filter_players %>%
+  filter(!id %in% gs_winners$id)
+
+# brisanje privremenih okvira koji su nepotrebni u daljnjem radu
+rm(filter_players)
+```
+
+## Deskriptivna statistika
+
+Sada kada imamo podatke na kojima možemo provoditi analizu, izračunat ćemo osnovne deskriptivne statistike za svaku od grupa. Izračunat ćemo sljedeće vrijednosti:
+
+* prosjek asova svake grupe
+* medijan asova
+* standardnu devijaciju asova
+* minimalnu vrijednost asova svake grupe
+* maksimalnu vrijednost asova svake grupe
+* ukupan broj odigranih mečeva za svaku grupu
+* prosjek asova po meču (APM) cijele grupe
+* broj igrača u svakoj grupi
+
+```{r echo=FALSE}
+# ispis deskriptivne statistike asova za svaku grupu
+gs_winners %>%
+  mutate(id = "Grand Slam pobjednici") %>%
+  bind_rows(gs_others %>%
+    mutate(id = "Ostali igrači")) %>%
+  bind_rows(gs_filter1 %>%
+    mutate(id = "Ostali igrači (n>=7)")) %>%
+  bind_rows(all_players %>%
+    mutate(id = "Svi igrači")) %>%
+  group_by(id) %>%
+  summarise(
+    mean_aces = mean(aces),
+    median_aces = median(aces),
+    sd_aces = sd(aces),
+    min_aces = min(aces),
+    max_aces = max(aces),
+    total_matches = sum(matches),
+    group_apm = sum(aces) / sum(matches),
+    n_players = n()
+  ) %>%
+  knitr::kable(
+    caption = "Servirani asovi po grupama",
+    digits = 2
+  )
+```
+
+Uz tablicu s deskriptivnim statistikama, možemo i vizualizirati podatke kako bismo dobili bolji uvid u njih. Za to ćemo koristiti boxplotove za broj asova i srednje vrijednost asova po mečevima (APM) igrača te dijagrame gustoće za prosjek asova po meču kako bismo dobili uvid u distribuciju podataka. Za svaku od grupa ćemo izraditi zasebne vizualizacije kako bismo mogli usporediti podatke između grupa. Uz to, izradit ćemo i vizualizacije za sve igrače kako bismo dobili uvid u distribuciju podataka za cijelu populaciju igrača.
+
+Boxplotovi broja asova i APM-ova za svaku grupu:
+
+```{r, echo=FALSE}
+# izrada boxplot dijagrama za broj asova svake grupe
+ggplot() +
+  geom_boxplot(data = gs_winners, aes(x = aces, y = "Grand Slam pobjednici")) +
+  geom_boxplot(data = gs_others, aes(x = aces, y = "Ostali igrači")) +
+  geom_boxplot(data = gs_filter1, aes(x = aces, y = "Ostali igrači (n>=7)")) +
+  geom_boxplot(data = all_players, aes(x = aces, y = "Svi igrači")) +
+  labs(x = "Broj asova", y = "Grupa igrača") +
+  theme_bw()
+
+# izrada boxplot dijagrama APM-ova svake grupe
+ggplot() +
+  geom_boxplot(data = gs_winners, aes(x = apm, y = "Grand Slam pobjednici")) +
+  geom_boxplot(data = gs_others, aes(x = apm, y = "Ostali igrači")) +
+  geom_boxplot(data = gs_filter1, aes(x = apm, y = "Ostali igrači (n>=7)")) +
+  geom_boxplot(data = all_players, aes(x = apm, y = "Svi igrači")) +
+  labs(x = "APM igrača", y = "Grupa igrača") +
+  theme_bw()
+```
+
+Iz boxplot dijagrama možemo vidjeti kako je distribucija asova igrača jako nakošena na lijevu stranu te kako ima jako puno ekstremnih vrijednosti, što i ima smisla jer broj asova ultimativno ovisi o ukupnom broju mečeva koje je igrač odigrao tijekom svoje karijere.
+
+Zbog toga ćemo usporedbu broja asova između grupa raditi kroz srednju vrijednost asova po mečevima (APM) igrača. Kroz APM dobivamo jedinstvenu mjeru koja ne ovisi o broju mečeva koje je igrač odigrao te je stoga pogodnija za usporedbu između grupa.
+
+U boxplot dijagramu APM-ova možemo stoga primijetiti kako su distribucije APM-ova puno manje nakošene te imaju puno manje ekstremnih vrijednosti.
+
+Deskriptivna statistika APM-ova za svaku grupu je sljedeća:
+
+```{r, echo=FALSE}
+# ispis deskriptivne statistike APM-ova za svaku grupu
+gs_winners %>%
+  mutate(id = "Grand Slam pobjednici") %>%
+  bind_rows(gs_others %>%
+    mutate(id = "Ostali igrači")) %>%
+  bind_rows(gs_filter1 %>%
+    mutate(id = "Ostali igrači (n>=7)")) %>%
+  bind_rows(all_players %>%
+    mutate(id = "Svi igrači")) %>%
+  group_by(id) %>%
+  summarise(
+    mean_apm = mean(apm),
+    median_apm = median(apm),
+    sd_apm = sd(apm),
+    min_apm = min(apm),
+    max_apm = max(apm),
+    n_players = n()
+  ) %>%
+  knitr::kable(
+    caption = "APM igrača po grupama",
+    digits = 3
+  )
+```
+
+Kako bismo dobili bolji uvid u samu distribuciju APM-ova grupa, izradit ćemo dijagrame gustoće za svaku grupu:
+
+```{r, echo=FALSE}
+# izrada grafova gustoće APM-ova za svaku grupu
+gs_winners %>%
+  mutate(id = "Grand Slam pobjednici") %>%
+  bind_rows(gs_others %>%
+    mutate(id = "Ostali igrači")) %>%
+  bind_rows(gs_filter1 %>%
+    mutate(id = "Ostali igrači (n>=7)")) %>%
+  bind_rows(all_players %>%
+    mutate(id = "Svi igrači")) %>%
+  ggplot(aes(x = apm, fill = id)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~id, ncol = 2) +
+  labs(x = "APM igrača", y = "Gustoća igrača za APM") +
+  theme_bw()
+```
+
+Iz dijagrama gustoća svake od grupa možemo vidjeti kako su podatci uistinu još uvijek lijevo nakošeni te vjerojatno nisu normalno distribuirani. Zbog toga ćemo prvo trebati provjeriti normalnost podataka kako bismo mogli odlučiti koje testove ćemo koristiti za usporedbu grupa.
+
+## Statističko testiranje
+
+Nakon vizualnog uvida u podatke i izračunatih deskriptivnih statistika, možemo započeti statističko testiranje kako bismo dobili odgovor na temeljno pitanje ovog istraživanja: ***Postoji li razlika u broju odigranih aseva između igrača koji su osvojili Grand Slam naslov i onih koji nisu?***
+
+### Normalnost uzoraka
+
+Kako bismo odlučili hoćemo li koristiti parametarske ili neparametarske testove, potrebno je provjeriti normalnost podatako. Za to ćemo iskoristiti Kolmogorov-Smirnovljev test. Budući da smo već ranije zaključili da je APM pogodniji za usporedbu grupa, provjerit ćemo normalnost samo za APM-ove.
+
+Prije provođenja Kolmogorov-Smirnovljevog testa postavljamo sljedeće hipoteze:
+
+* H0: Podatci su normalno distribuirani
+* H1: Podatci nisu normalno distribuirani
+
+Za test uzimamo razinu značajnosti od 0.05.
+
+```{r, echo=FALSE, warning=FALSE}
+# provjera normalnosti APM-ova za svaku grupu i vizualizacija
+ggplot(
+  data = gs_winners,
+  aes(x = apm)
+) +
+  stat_ecdf(geom = "step", pad = FALSE) +
+  stat_function(
+    fun = pnorm,
+    args = list(mean = mean(gs_winners$apm), sd = sd(gs_winners$apm)),
+    color = "red"
+  ) +
+  labs(x = "APM igrača", y = "CDF") +
+  ggtitle("Grand Slam pobjednici") +
+  theme_bw()
+
+ks.test(
+  gs_winners$apm,
+  "pnorm",
+  mean = mean(gs_winners$apm),
+  sd = sd(gs_winners$apm),
+  exact = TRUE
+)
+
+ggplot(
+  data = gs_others,
+  aes(x = apm)
+) +
+  stat_ecdf(geom = "step", pad = FALSE) +
+  stat_function(
+    fun = pnorm,
+    args = list(mean = mean(gs_others$apm), sd = sd(gs_others$apm)),
+    color = "red"
+  ) +
+  labs(x = "APM igrača", y = "CDF") +
+  ggtitle("Ostali igrači") +
+  theme_bw()
+
+ks.test(
+  gs_others$apm,
+  "pnorm",
+  mean = mean(gs_others$apm),
+  sd = sd(gs_others$apm),
+  exact = TRUE
+)
+
+ggplot(
+  data = gs_filter1,
+  aes(x = apm)
+) +
+  stat_ecdf(geom = "step", pad = FALSE) +
+  stat_function(
+    fun = pnorm,
+    args = list(mean = mean(gs_filter1$apm), sd = sd(gs_filter1$apm)),
+    color = "red"
+  ) +
+  labs(x = "APM igrača", y = "CDF") +
+  ggtitle("Ostali igrači (n>=7)") +
+  theme_bw()
+
+ks.test(
+  gs_filter1$apm,
+  "pnorm",
+  mean = mean(gs_filter1$apm),
+  sd = sd(gs_filter1$apm),
+  exact = TRUE
+)
+```
+
+Kao što možemo vidjeti iz dijagrama i rezultata Kolmogorov-Smirnovljevog testa, jedino uzorak igrača s Grand Slam naslovom prolazi test normalnosti, dok ostali, zbog činjenice da su uzorci puno veći, ne prolaze test te za njih odbacujemo H0 hipotezu uz razinu značajnosti od 0.05.
+
+Zbog toga ćemo morati koristiti neparametarske testove za usporedbu grupa.
+
+### Neparametarsko testiranje
+
+Sada kada smo utvrdili da su uzorci nenoormalno distribuirani, možemo koristiti neparametarske testove za usporedbu grupa. Budući da uspoređujemo dvije grupe, koristit ćemo Mann-Whitney U test. Prije provođenja testa postavljamo sljedeće hipoteze:
+
+* H0: Nema razlike u prosjeku APM-ova između grupa (uzorci dolaze iz iste populacije)
+* H1: Postoji razlika u prosjeku APM-ova između grupa (jedan uzorak stohastički dominira)
+
+Za ovaj test također uzimamo razinu značajnosti od 0.05.
+  
+```{r, echo=FALSE}
+# provođenje Mann-Whitney U testa između igrača s naslovom i ostalih igrača
+wilcox.test(
+  gs_winners$apm,
+  gs_others$apm,
+  alternative = "two.sided",
+  paired = FALSE,
+  exact = FALSE,
+  correct = TRUE
+)
+
+# provođenje Mann-Whitney U testa između igrača s naslovom i ostalih igrača (n>=7)
+wilcox.test(
+  gs_winners$apm,
+  gs_filter1$apm,
+  alternative = "two.sided",
+  paired = FALSE,
+  exact = FALSE,
+  correct = TRUE
+)
+```
+
+Kao što možemo vidjeti iz rezultata testa, u oba slučaja odbacujemo H0 hipotezu uz razinu značajnosti od 0.05. To znači da postoji razlika u prosjeku APM-ova između grupa igrača s osvojenim Grand Slam naslovom i ostalih igrača. Uz to, možemo primijetiti kako je razlika u prosjeku APM-ova između uzorka igrača s naslovom i ostalih igrača puno veća nego između uzorka igrača s naslovom i filtriranih ostalih igrača.
+
+# Zaključak
+
+U ovom istraživanju smo pokušali odgovoriti na pitanje postoji li razlika u broju odigranih aseva između igrača koji su osvojili Grand Slam naslov i onih koji nisu. Kako bismo odgovorili na to pitanje, analizirali smo podatke o svim odigranim mečevima od 1968. do 2023. godine. Nakon pripreme podataka, izračunavanja deskriptivnih statistika i vizualizacije podataka, zaključili smo da postoji razlika u prosjeku APM-ova između igrača koji su osvojili Grand Slam naslov i onih koji nisu. Uz to, možemo primijetiti kako je razlika u prosjeku APM-ova između uzorka igrača s naslovom i ostalih igrača puno veća nego između uzorka igrača s naslovom i filtriranih ostalih igrača. Iz toga možemo zaključiti da postoji razlika u broju odigranih aseva između igrača koji su osvojili Grand Slam naslov i onih koji nisu te da je ta razlika puno veća nego što se može objasniti činjenicom da igrači koji su osvojili Grand Slam naslov imaju više odigranih mečeva od ostalih igrača. Iz toga možemo zaključiti da bi broj odigranih aseva mogao biti jedan od faktora koji utječu na osvajanje Grand Slam naslova.
+
+```{r, echo=FALSE, include=FALSE}
+# oslobađanje memorije
+rm(all_players, gs_winners, gs_others, gs_filter1)
+```
