@@ -1,0 +1,1218 @@
+---
+title: "Analiziranje rezultata teniskih mečeva"
+author: "Luka Raić, Anđelko Prskalo, Martin-Ante Rogošić, Katarina Zec"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    highlight: tango
+toc-title: "Sadržaj"
+documetclass: article
+classoption: a4paper
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(purrr)
+library(lubridate)
+library(stringr)
+library(dunn.test)
+library(car)
+```
+
+# Definicija zajednički korištenih podataka i funkcija:
+
+Funkcije za dohvat podataka i željenog perioda:
+
+```{r}
+fetch_data <- function(years) {
+  
+  df_list <- list()
+  for (year in years) {
+    file_path <- paste0("./ATP-Matches/atp_matches_", year, ".csv")
+    if (file.exists(file_path)) {
+      df <- read_csv(file_path, col_types = "cccnccnnncccncnnncccncncncnnnnnnnnnnnnnnnnnnnnnnn", show_col_types = FALSE)
+      df_list[[as.character(year)]] <- df
+    } else {
+      warning(paste("File not found for year", year))
+    }
+  }
+
+  matches <- bind_rows(df_list)
+  rm(df_list, file_path, df, year, years)
+
+  matches  
+}
+```
+
+
+# 1. istrazivačko pitanje: Kakva je distribucija mečeva na specifičnim podlogama u različitim godišnjim dobima?
+
+Dohvaćamo potrebne podatke i malo uređujemo:
+
+```{r}
+matches <- fetch_data(1968:2023)
+
+matches$tourney_date <- ymd(matches$tourney_date)
+matches <- filter(matches, !is.na(surface))
+```
+
+Za svaku obzervaciju određujemo kojem godišnjem dobu pripada: 
+
+```{r}
+getSeason <- function(DATES) {
+    WS <- as.Date("2012-12-15", format = "%Y-%m-%d") # Winter Solstice
+    SE <- as.Date("2012-3-15",  format = "%Y-%m-%d") # Spring Equinox
+    SS <- as.Date("2012-6-15",  format = "%Y-%m-%d") # Summer Solstice
+    FE <- as.Date("2012-9-15",  format = "%Y-%m-%d") # Fall Equinox
+
+    d <- as.Date(strftime(DATES, format="2012-%m-%d"))
+
+    ifelse (d >= WS | d < SE, "Winter",
+      ifelse (d >= SE & d < SS, "Spring",
+        ifelse (d >= SS & d < FE, "Summer", "Fall")))
+}
+
+matches$season <- getSeason(matches$tourney_date)
+```
+
+Izvlacenje potrebnih podataka i njihova vizualizacija:
+
+```{r}
+ggplot(matches, aes(x = surface)) +
+  geom_bar() + theme_bw() +
+   facet_wrap(season ~ ., nrow = 2, ncol = 2) +
+    labs(title = "Distribution of Matches on Specific Surfaces in Different Seasons", 
+     x = "Surface", y = "Number of Matches")  
+
+```
+
+# 3. istraživačko pitanje: Ima li razlike u broju serviranih asova na različitim podlogama?
+
+## Učitavanje podataka
+
+Podatke ćemo učitati iz CSV datoteka u listu podatkovnih okvira. Svaki podatkovni okvir sadržava podatke mečeva jedne godine. Nakon toga spajamo sve podatkove okvire u jedan te time imamo informacije o svim odigranim mečevima od 1968. do 2023. godine dostupne u jednom podatkovnom okviru. Iz tog okvira ćemo naknadno izvlačiti potrebne podatke za svrhe analize.
+
+Proces učitavanja podataka je prikazan u sljedećem bloku koda:
+
+```{r}
+matches <- fetch_data(1968:2023)
+```
+
+## Prilagodba tipova podataka
+
+Nakon učitavanja podataka, potrebno je ispraviti tipove podataka za neke stupce. Ti stupci su:
+
+* `surface` - podloga na kojoj se igrao meč: trava, zemlja, tvrda podloga, tepih (eng. grass, clay, hard, carpet)
+* `tourney_level` - razina turnira: Grand Slam, ATP Finals, ATP Masters 1000, ATP Tour, ATP Challengers
+* `tourney_date` - datum održavanja turnira
+* `winner_hand` - ruka s kojom je pobjednik igrao meč: desnoruk, lijevoruk, ambidekster, nepoznato (eng. right-handed ("R"), left-handed ("L"), ambidextrous ("A"), unknown ("U"))
+* `loser_hand` - ruka s kojom je gubitnik igrao meč (definirano isto kao i za winner_hand)
+
+Prilagodba tipova podataka je prikazana u sljedećem kodu:
+
+```{r}
+matches$surface <- factor(
+  matches$surface,
+  levels = c("Grass", "Clay", "Hard", "Carpet")
+)
+matches$tourney_level <- factor(
+  matches$tourney_level,
+  levels = c("F", "A", "D", "M", "G")
+)
+matches$tourney_date <- ymd(matches$tourney_date)
+matches$winner_hand <- factor(
+  matches$winner_hand,
+  levels = c("R", "L", "A", "U")
+)
+matches$loser_hand <- factor(
+  matches$loser_hand,
+  levels = c("R", "L", "A", "U")
+)
+```
+
+## Statistička analiza
+
+### Priprema podataka
+
+Za provođenje statističke analize, potrebno je pripremiti podatke. U ovom slučaju, potrebno je izvući podatke o broju serviranih asova po meču i podlogama na kojima se igrao meč. Također, potrebno je ukloniti sve mečeve koji nemaju podatak o broju serviranih asova ili podlogama na kojima se igrao meč.
+
+Podatke spremamo u nove podatkovne okvire od kojih svaki predstavlja aseve na jednoj podlozi:
+
+```{r}
+# izdvajanje broja serviranih asova na travnatoj podlozi
+aces_grass <- matches %>%
+  filter(!is.na(w_ace) & !is.na(l_ace) & surface == "Grass") %>%
+  mutate(aces = w_ace + l_ace) %>%
+  dplyr::select(aces)
+
+# izdvajanje broja serviranih asova na zemljanoj podlozi
+aces_clay <- matches %>%
+  filter(!is.na(w_ace) & !is.na(l_ace) & surface == "Clay") %>%
+  mutate(aces = w_ace + l_ace) %>%
+  dplyr::select(aces)
+
+# izdvajanje broja serviranih asova na tvrdoj podlozi
+aces_hard <- matches %>%
+  filter(!is.na(w_ace) & !is.na(l_ace) & surface == "Hard") %>%
+  mutate(aces = w_ace + l_ace) %>%
+  dplyr::select(aces)
+
+# izdvajanje broja serviranih asova na tepihu
+aces_carpet <- matches %>%
+  filter(!is.na(w_ace) & !is.na(l_ace) & surface == "Carpet") %>%
+  mutate(aces = w_ace + l_ace) %>%
+  dplyr::select(aces)
+
+# izdvajanje broja serviranih asova na svim podlogama
+aces_all <- matches %>%
+  filter(!is.na(w_ace) & !is.na(l_ace) & !is.na(surface)) %>%
+  mutate(aces = w_ace + l_ace) %>%
+  dplyr::select(aces)
+```
+
+### Deskriptivna statistika
+
+Sada kada smo pripremili podatke, možemo izračunati deskriptivnu statistiku za broj serviranih asova po podlogama. Za svaku podlogu, izračunat ćemo sljedeće vrijednosti za svaku od podloga:
+
+* prosjecni broj asova
+* standardnu devijaciju broja asova
+* medijan broja asova
+* minimalni broj asova
+* maksimalni broj asova
+* broj mečeva
+
+```{r, echo=FALSE}
+# deskriptivna statistika za broj serviranih asova na svakoj od podloga
+aces_grass %>%
+  mutate(surface = "Travnata") %>%
+  bind_rows(aces_clay %>%
+    mutate(surface = "Zemljana")) %>%
+  bind_rows(aces_hard %>%
+    mutate(surface = "Tvrda")) %>%
+  bind_rows(aces_carpet %>%
+    mutate(surface = "Tepih")) %>%
+  bind_rows(aces_all %>%
+    mutate(surface = "Ukupno")) %>%
+  group_by(surface) %>%
+  summarise(
+    mean = mean(aces),
+    sd = sd(aces),
+    median = median(aces),
+    min = min(aces),
+    max = max(aces),
+    count = n()
+  ) %>%
+  arrange(count) %>%
+  knitr::kable(
+    caption = "Servirani asovi po podlogama",
+    digits = 2
+  )
+```
+
+Iz prikazanih vizualizacija, možemo vidjeti kako je, u prosijeku, najviše asova servirano na travi, a najmanje na zemlji. Također, možemo vidjeti kako je na travi servirano najviše asova u jednom meču, a na tepihu najmanje. Najveću varijancu broja serviranih asova po meču imamo na travi.
+
+Ove podatke možemo vizualizirati pomoću boxplot dijagrama i dijagrama gustoće.
+
+```{r, echo=FALSE}
+# boxplot dijagrami za broj serviranih asova na svakoj od podloga
+aces_grass %>%
+  mutate(surface = "Travnata") %>%
+  bind_rows(aces_clay %>%
+    mutate(surface = "Zemljana")) %>%
+  bind_rows(aces_hard %>%
+    mutate(surface = "Tvrda")) %>%
+  bind_rows(aces_carpet %>%
+    mutate(surface = "Tepih")) %>%
+  ggplot(aes(x = aces, y = surface)) +
+  geom_boxplot() +
+  labs(
+    title = "Broj serviranih asova po podlogama",
+    x = "Broj serviranih asova",
+    y = "Podloga"
+  )
+```
+```{r, echo=FALSE}
+# dijagrami gustoće za broj serviranih asova na svakoj od podloga
+aces_grass %>%
+  mutate(surface = "Travnata") %>%
+  bind_rows(aces_clay %>%
+    mutate(surface = "Zemljana")) %>%
+  bind_rows(aces_hard %>%
+    mutate(surface = "Tvrda")) %>%
+  bind_rows(aces_carpet %>%
+    mutate(surface = "Tepih")) %>%
+  ggplot(aes(x = aces, fill = surface)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~surface, ncol = 2) +
+  labs(
+    title = "Broj serviranih asova po podlogama",
+    x = "Broj serviranih asova",
+    y = "Gustoća"
+  )
+```
+
+Iz prikazanih boxplot dijagrama i dijagrama gustoće možemo vidjeti kako je distribucija svih uzoraka jako nakošena u lijevo što znači da je većina uzoraka blizu minimalne vrijednosti.
+
+Kako bismo pokušali normalizirati distribucije, možemo izbaciti sve observacije s vrijednostima izvan 1.5 interkvartilnog raspona (outlier-e).
+
+```{r, echo=FALSE}
+# izbacivanje outlier-a
+aces_grass <- aces_grass %>%
+  filter(
+    aces >= quantile(aces, 0.25) - 1.5 * IQR(aces) &
+      aces <= quantile(aces, 0.75) + 1.5 * IQR(aces)
+  )
+
+aces_clay <- aces_clay %>%
+  filter(
+    aces >= quantile(aces, 0.25) - 1.5 * IQR(aces) &
+      aces <= quantile(aces, 0.75) + 1.5 * IQR(aces)
+  )
+
+aces_hard <- aces_hard %>%
+  filter(
+    aces >= quantile(aces, 0.25) - 1.5 * IQR(aces) &
+      aces <= quantile(aces, 0.75) + 1.5 * IQR(aces)
+  )
+
+aces_carpet <- aces_carpet %>%
+  filter(
+    aces >= quantile(aces, 0.25) - 1.5 * IQR(aces) &
+      aces <= quantile(aces, 0.75) + 1.5 * IQR(aces)
+  )
+
+aces_all <- aces_all %>%
+  filter(
+    aces >= quantile(aces, 0.25) - 1.5 * IQR(aces) &
+      aces <= quantile(aces, 0.75) + 1.5 * IQR(aces)
+  )
+```
+```{r, echo=FALSE}
+# deskriptivna statistika za broj serviranih asova na svakoj od podloga nakon izbacivanja outlier-a
+aces_grass %>%
+  mutate(surface = "Travnata") %>%
+  bind_rows(aces_clay %>%
+    mutate(surface = "Zemljana")) %>%
+  bind_rows(aces_hard %>%
+    mutate(surface = "Tvrda")) %>%
+  bind_rows(aces_carpet %>%
+    mutate(surface = "Tepih")) %>%
+  group_by(surface) %>%
+  summarise(
+    mean = mean(aces),
+    sd = sd(aces),
+    median = median(aces),
+    min = min(aces),
+    max = max(aces),
+    count = n()
+  ) %>%
+  knitr::kable(
+    caption = "Servirani asovi po podlogama nakon izbacivanja outlier-a",
+    digits = 2
+  )
+```
+```{r, echo=FALSE}
+# boxplot dijagrami za broj serviranih asova na svakoj od podloga nakon izbacivanja outlier-a
+aces_grass %>%
+  mutate(surface = "Travnata") %>%
+  bind_rows(aces_clay %>%
+    mutate(surface = "Zemljana")) %>%
+  bind_rows(aces_hard %>%
+    mutate(surface = "Tvrda")) %>%
+  bind_rows(aces_carpet %>%
+    mutate(surface = "Tepih")) %>%
+  ggplot(aes(x = aces, y = surface)) +
+  geom_boxplot() +
+  labs(
+    title = "Broj serviranih asova po podlogama nakon izbacivanja outlier-a",
+    x = "Broj serviranih asova",
+    y = "Podloga"
+  )
+```
+```{r, echo=FALSE}
+# dijagrami gustoće za broj serviranih asova na svakoj od podloga nakon izbacivanja outlier-a
+aces_grass %>%
+  mutate(surface = "Travnata") %>%
+  bind_rows(aces_clay %>%
+    mutate(surface = "Zemljana")) %>%
+  bind_rows(aces_hard %>%
+    mutate(surface = "Tvrda")) %>%
+  bind_rows(aces_carpet %>%
+    mutate(surface = "Tepih")) %>%
+  ggplot(aes(x = aces, fill = surface)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~surface, ncol = 2) +
+  labs(
+    title = "Broj serviranih asova po podlogama nakon izbacivanja outlier-a",
+    x = "Broj serviranih asova",
+    y = "Gustoća"
+  )
+```
+
+Nakon izbacivanja outlier-a, distribucije su i dalje nakošene u lijevo, ali je to manje izraženo nego prije. Također možemo vidjeti kako je sada varijanca svake podloge manja nego prije.
+
+### Statističko testiranje
+
+Nakon vizualiziranja podataka i izbacivanja outlier-a, možemo provesti statističko testiranje. Budući da distribucije uzoraka ne izgledaju kao da potječu iz normalne distribucije, prvo ćemo provjeriti njihovu normalnost, a zatim na temelju ishoda testa odlučiti koji test ćemo koristiti za provođenje statističkog testiranja.
+
+#### Testiranje normalnosti
+
+Za testiranje normalnosti koristit ćemo Kolmogorov-Smirnovljev test. Testirat ćemo normalnost svih uzoraka zajedno, a zatim svakog uzorka posebno.
+
+Prije testiranja, postavljamo hipoteze:
+
+* H0: distribucija uzorka je normalna
+* H1: distribucija uzorka nije normalna
+
+Za razinu značajnosti uzimamo 0.05.
+
+```{r, echo=FALSE, warning=FALSE}
+# testiranje normalnosti svih uzoraka zajedno
+ggplot(
+  data = aces_all,
+  aes(x = aces)
+) +
+  stat_ecdf(geom = "step", pad = FALSE) +
+  stat_function(
+    fun = pnorm,
+    args = list(mean = mean(aces_all$aces), sd = sd(aces_all$aces)),
+    color = "red"
+  ) +
+  labs(x = "Broj serviranih asova", y = "CDF") +
+  ggtitle("Servirani asovi na svim podlogama") +
+  theme_bw()
+ks.test(
+  aces_all$aces,
+  "pnorm",
+  mean = mean(aces_all$aces),
+  sd = sd(aces_all$aces)
+)
+
+# testiranje normalnosti uzorka travnate podloge
+ggplot(
+  data = aces_grass,
+  aes(x = aces)
+) +
+  stat_ecdf(geom = "step", pad = FALSE) +
+  stat_function(
+    fun = pnorm,
+    args = list(mean = mean(aces_grass$aces), sd = sd(aces_grass$aces)),
+    color = "red"
+  ) +
+  labs(x = "Broj serviranih asova", y = "CDF") +
+  ggtitle("Servirani asovi na travnatoj podlozi") +
+  theme_bw()
+ks.test(
+  aces_grass$aces,
+  "pnorm",
+  mean = mean(aces_grass$aces),
+  sd = sd(aces_grass$aces)
+)
+
+# testiranje normalnosti uzorka zemljane podloge
+ggplot(
+  data = aces_clay,
+  aes(x = aces)
+) +
+  stat_ecdf(geom = "step", pad = FALSE) +
+  stat_function(
+    fun = pnorm,
+    args = list(mean = mean(aces_clay$aces), sd = sd(aces_clay$aces)),
+    color = "red"
+  ) +
+  labs(x = "Broj serviranih asova", y = "CDF") +
+  ggtitle("Servirani asovi na zemljanoj podlozi") +
+  theme_bw()
+ks.test(
+  aces_clay$aces,
+  "pnorm",
+  mean = mean(aces_clay$aces),
+  sd = sd(aces_clay$aces)
+)
+
+# testiranje normalnosti uzorka tvrde podloge
+ggplot(
+  data = aces_hard,
+  aes(x = aces)
+) +
+  stat_ecdf(geom = "step", pad = FALSE) +
+  stat_function(
+    fun = pnorm,
+    args = list(mean = mean(aces_hard$aces), sd = sd(aces_hard$aces)),
+    color = "red"
+  ) +
+  labs(x = "Broj serviranih asova", y = "CDF") +
+  ggtitle("Servirani asovi na tvrdoj podlozi") +
+  theme_bw()
+ks.test(
+  aces_hard$aces,
+  "pnorm",
+  mean = mean(aces_hard$aces),
+  sd = sd(aces_hard$aces)
+)
+
+# testiranje normalnosti uzorka tepiha
+ggplot(
+  data = aces_carpet,
+  aes(x = aces)
+) +
+  stat_ecdf(geom = "step", pad = FALSE) +
+  stat_function(
+    fun = pnorm,
+    args = list(mean = mean(aces_carpet$aces), sd = sd(aces_carpet$aces)),
+    color = "red"
+  ) +
+  labs(x = "Broj serviranih asova", y = "CDF") +
+  ggtitle("Servirani asovi na tepihu") +
+  theme_bw()
+ks.test(
+  aces_carpet$aces,
+  "pnorm",
+  mean = mean(aces_carpet$aces),
+  sd = sd(aces_carpet$aces)
+)
+```
+
+Iz prikazanih dijagrama i rezultata testiranja možemo vidjeti kako distribucije uzoraka nisu normalne. Stoga ćemo za statističko testiranje koristiti neparametarske testove.
+
+#### Neparametarsko testiranje
+
+Za neparametarsko testiranje koristit ćemo Kruskal-Wallisov test. Prije testiranja, postavljamo hipoteze:
+
+* H0: nema razlike u broju serviranih asova na različitim podlogama
+* H1: postoji razlika u broju serviranih asova na različitim podlogama
+
+Za razinu značajnosti uzimamo 0.05.
+
+```{r, echo=FALSE}
+aces <- aces_grass %>%
+  mutate(surface = "Travnata") %>%
+  bind_rows(aces_clay %>%
+    mutate(surface = "Zemljana")) %>%
+  bind_rows(aces_hard %>%
+    mutate(surface = "Tvrda")) %>%
+  bind_rows(aces_carpet %>%
+    mutate(surface = "Tepih")) %>%
+  dplyr::select(aces, surface)
+
+# Kruskal-Wallisov test za broj serviranih asova na različitim podlogama
+kruskal.test(aces ~ surface, data = aces)
+```
+
+Iz rezultata testiranja možemo vidjeti kako je p-vrijednost manja od 0.05, stoga odbacujemo nultu hipotezu i zaključujemo kako postoji razlika u broju serviranih asova na različitim podlogama.
+
+Kako bismo saznali na kojim podlogama postoji razlika u broju serviranih asova, provest ćemo post-hoc testiranje. Za post-hoc testiranje koristit ćemo Dunnov test. 
+
+```{r, echo=FALSE}
+# Dunnov test za broj serviranih asova na različitim podlogama
+dunn.test(
+  aces$aces,
+  aces$surface,
+  method = "bonferroni",
+  alpha=0.05,
+  kw = FALSE
+)
+```
+
+Iz rezultata testiranja možemo vidjeti kako je p-vrijednost manja od 0.05 za sve kombinacije podloga, stoga odbacujemo nultu hipotezu za sve kombinacije podloga i zaključujemo kako postoji razlika u broju serviranih asova na svim kombinacijama podloga.
+
+## Zaključak
+
+Na temelju provedene statističke analize, možemo zaključiti kako postoji razlika u broju serviranih asova na različitim podlogama. Štoviše, postoji razlika u broju serviranih asova na svim kombinacijama podloga. Najviše asova servirano je na travi, a najmanje na zemlji. Također, najveća varijanca broja serviranih asova po meču je na travi, a najmanja na tepihu.
+
+```{r, echo=FALSE, include=FALSE}
+# oslobađanje memorije
+rm(aces, aces_all, aces_carpet, aces_clay, aces_grass, aces_hard)
+```
+
+# 6. istrazivačko pitanje: U kojoj je mjeri moguće predvidjeti ishod teniskog meča?
+
+## Uvod
+
+Kako bi odgovorili na ovo pitanje, u analizi smo se fokusirali na teniske mečeve iz perioda 2010-2020 (mečevi "modernog tenisa" za koje imamo većinu podataka za veliki broj varijabli, Novak Đoković je 2011. osvojio 3/4 Grand Slam turnira i počela je formacija tzv. "Velike trojke"...) pri čemu nećemo uzimati u obzir mečeve Olimpijskih igara, Davis Cup-a i ATP Tour Finals-a zbog drugačijeg formata (ovo su jedini turniri za koje smo našli da su drugačijeg formata, vrlo je vjerojatno da ih ima još, ali izgleda da nam nisu stvarali previše problema kasnije):
+
+```{r}
+matches <- fetch_data(2010:2020)
+
+matches$tourney_name %>% 
+  str_detect("(Olympics|Davis Cup|Finals)") %>% 
+    which -> differentFormatMatchesIndices
+matches <- matches[-differentFormatMatchesIndices,]
+```
+
+Za predikciju ishoda meča koristit ćemo sljedeće varijable (vrijednosti varijabli sa oznakom * izračunavamo na temelju svih mečeva tenisača koji su odigrani prije meča za koji računamo odgovarajuću statistiku):
+
+- height - visina igrača. Viši igrači imaju brži i efikasniji servis, lakše pokrivaju teren, bolja igra na mreži.
+- age - broj godina. Veći broj godina donosi iskustvo, ali potencijalno i lošije fizičke sposobnosti.
+- rank - rang na ATP ljestvici. Indikator sveukupne kvalitete igrača.
+- avgAce* - prosječan broj asova po meču. Indikator kvalitete servisa tenisača.
+- avgDf* - prosječan broj dvostrukih pogrešaka po meču. Indikator sklonosti pogreškama.
+- avgSvptWon* - prosječan omjer osvojenih poena na servisu u usporedbi s igračevim brojem odigranih poena za vlastiti servis. Indikator snažnog i efikasnog servisa.
+- avgBpSavedPercentage* - prosječan omjer "spašenih" breakpointova. Indikator mentalne snage i iskustva tenisača.
+- winrate* - postotak pobjeda u dosadašnjoj karijeri. Indikator kvalitete tenisača.
+- lastTenWinrate - postotak pobjeda u zadnjih 10 mečeva. Indikator forme tenisača.
+
+U nastavku slijede grafovi za neke od prethodno odabranih statistika čiji nam je utjecaj na konačan ishod meča bio "upitan":
+
+```{r}
+ifelse(matches$w_bpFaced == 0, NA, 
+       matches$w_bpSaved / matches$w_bpFaced) -> wBpSavedPercentage
+ifelse(matches$l_bpFaced == 0, NA, 
+       matches$l_bpSaved / matches$l_bpFaced) -> lBpSavedPercentage
+
+data <- data.frame(winner = wBpSavedPercentage, loser = lBpSavedPercentage)
+data <- na.omit(data)
+data <- gather(data, key = "status", value = "bpSavedPercentage")
+
+plot <- ggplot(data, aes(x = bpSavedPercentage, fill = status)) +
+  geom_histogram(alpha = 0.5, bins = 40, position = 'identity') +
+  scale_fill_manual(values = c("winner" = "green", "loser" = "red")) + theme_bw()
+
+plot
+```
+```{r}
+ifelse(matches$w_svpt == 0, NA, 
+       (matches$w_1stWon + matches$w_2ndWon) / matches$w_svpt) -> wSvptWonPercentage
+ifelse(matches$l_svpt == 0, NA, 
+       (matches$l_1stWon + matches$l_2ndWon) / matches$l_svpt) -> lSvptWonPercentage
+
+data <- data.frame(winner = wSvptWonPercentage, loser = lSvptWonPercentage)
+data <- na.omit(data)
+data <- gather(data, key = "status", value = "svptWonPercentage")
+
+plot <- ggplot(data, aes(status, svptWonPercentage)) +
+  geom_boxplot() + theme_bw()
+
+plot
+```
+```{r}
+data <- data.frame(winner = matches$winner_age, loser = matches$loser_age)
+data <- gather(data, key = "status", value = "age")
+
+plot <- ggplot(data, aes(x = age, color = status)) +
+  geom_density() + theme_bw()
+
+plot
+```
+
+Sada ćemo izbaciti neregularne obzervacije:
+
+```{r}
+faultyDataMatchesIndices <- which(
+  apply(matches[, c("winner_rank", "loser_rank", "winner_ht", "loser_ht", "w_ace")], 
+        1, function(x) any(is.na(x))))
+matches <- matches[-faultyDataMatchesIndices,]
+```
+
+te još malo pripremiti skup podataka za obradu:
+
+```{r}
+matches$tourney_date <- ymd(matches$tourney_date)
+matches <- matches %>% arrange(tourney_date, match_num)
+matches$match_id <- seq(1, nrow(matches))
+```
+
+## Obrada skupa podataka
+
+Sada odabiremo one teniske mečeve na kojima ćemo kasnije bazirati naš logistički model. To su teniski mečevi u kojima je svaki od oba tenisača prethodno odigrao barem 10 mečeva (pojedine statistike kao što je npr. winrate su jako osjetljive na broj obzervacija). Ove mečeve ćemo u nastavku zvati "validni mečevi":
+
+```{r}
+checkIfValidForProcessing = function(match) {
+  winnerId <-  match["winner_id"] %>% as.numeric
+  loserId <-  match["loser_id"] %>% as.numeric
+  matchId <-  match["match_id"] %>% as.numeric
+  
+  lastMatchIndex <-  matchId - 1
+  if (lastMatchIndex == 0) return(FALSE)
+  
+  winnersCandidates <-  pull(matches[1:lastMatchIndex, ], winner_id)
+  losersCandidates <-  pull(matches[1:lastMatchIndex, ], loser_id)
+  playersCandidates <-  c(winnersCandidates, losersCandidates)
+  
+  validPlayersIndices <-  table(playersCandidates) >= 10
+  table(playersCandidates)[validPlayersIndices] %>% names %>% as.numeric -> validPlayers
+  
+  if (winnerId %in% validPlayers && loserId %in% validPlayers) return (TRUE)
+  
+  return (FALSE)
+}
+
+validMatchesIndices <- apply(matches, 1, checkIfValidForProcessing)
+validMatches <- matches[validMatchesIndices, ]
+```
+
+Sada kreiramo pomoćni podatkovni okvir u kojemu će jedna obzervacija predstavljati statistike pojedinog igrača po pojedinom meču. NAPOMENA: ovdje gledamo performanse svakog igrača, i pobjednika i gubitnika, na svakom meču iz perioda 2010-2020 (osim na onim mečevima koje smo izbacili nakon prvog "čišćenja"):
+
+```{r}
+allWinnersMatchStats <- matches[, c("match_id", "winner_id", "w_ace", "w_df", "w_svpt", 
+                                    "w_1stWon", "w_2ndWon", "w_bpSaved", "w_bpFaced")]
+allWinnersMatchStats$won <- 1
+names(allWinnersMatchStats) <- c("matchId", "playerId", "ace", "df", "svpt", 
+                                 "firstWon", "secondWon", "bpSaved", "bpFaced", "won")
+
+allLosersMatchStats <- matches[, c("match_id", "loser_id", "l_ace", "l_df", "l_svpt",
+                                   "l_1stWon", "l_2ndWon", "l_bpSaved", "l_bpFaced")]
+allLosersMatchStats$won <- 0
+names(allLosersMatchStats) <- c("matchId", "playerId", "ace", "df", "svpt",
+                                "firstWon", "secondWon", "bpSaved", "bpFaced", "won")
+
+allPlayersMatchStats <- rbind(allWinnersMatchStats, allLosersMatchStats)
+allPlayersMatchStats <- allPlayersMatchStats %>% arrange(matchId)
+```
+
+Kreiramo dva podatkovna okvira (jedan za pobjednika, drugi za gubitnika) koji će sadržavati podatke o godinama, visini i rangu na ATP ljestvici u trenutku igranja validnog meča:
+
+```{r}
+validMatchesWinnerInfo <- validMatches[, c("match_id", "winner_id", "winner_ht", 
+                                           "winner_age", "winner_rank")]
+names(validMatchesWinnerInfo) <- c("matchId", "playerId", "height", "age", "rank")
+
+validMatchesLoserInfo <- validMatches[, c("match_id", "loser_id", "loser_ht", 
+                                          "loser_age", "loser_rank")]
+names(validMatchesLoserInfo) <- c("matchId", "playerId", "height", "age", "rank")
+```
+
+Za svaki validni meč računamo potrebne statistike za tenisača pobjednika i tenisača gubitnika na temelju svih njihovih prethodnih mečeva koji se nalaze u skupu "matches":
+
+```{r}
+calculateValidMatchesStats <- function(x) {
+  
+  matchId = x["matchId"] %>% as.numeric
+  playerId = x["playerId"] %>% as.numeric
+  height = x["height"] %>% as.numeric 
+  age = x["age"] %>% as.numeric 
+  rank = x["rank"] %>% as.numeric 
+  
+  pastMatches <- allPlayersMatchStats[allPlayersMatchStats$playerId == playerId & 
+                                        allPlayersMatchStats$matchId < matchId,]
+  
+  avgAce <- mean(pastMatches$ace, na.rm = T) 
+  
+  avgDf <- mean(pastMatches$df, na.rm = T)
+
+  svptWonPercentage <- ifelse(pastMatches$svpt == 0, NA, 
+                              (pastMatches$firstWon + pastMatches$secondWon) / pastMatches$svpt)
+  avgSvptWonPercentage <- mean(svptWonPercentage, na.rm = T)
+  
+  bpSavedPercentage <- ifelse(pastMatches$bpFaced == 0, NA, 
+                              pastMatches$bpSaved / pastMatches$bpFaced)
+  avgBpSavedPercentage <- mean(bpSavedPercentage, na.rm = T)
+                              
+  winrate <- mean(pastMatches$won, na.rm = T)
+  
+  lastTenWinrate <- sum(tail(pastMatches$won, 10)) / 10
+
+  result <- c(matchId, height, age, rank, avgAce, avgDf, 
+              avgBpSavedPercentage, avgSvptWonPercentage, winrate, lastTenWinrate)
+  
+  result
+}
+
+validMatchesWinnerData <- apply(validMatchesWinnerInfo, 1, calculateValidMatchesStats)
+validMatchesWinnerData <- as.data.frame(t(validMatchesWinnerData))
+colnames(validMatchesWinnerData) <- c("matchId", "height", "age", "rank", "avgAce", "avgDf", "avgBpSavedPercentage", "avgSvptWonPercentage", "winrate", "lastTenWinrate")
+
+validMatchesLoserData <- apply(validMatchesLoserInfo, 1, calculateValidMatchesStats)
+validMatchesLoserData <- as.data.frame(t(validMatchesLoserData))
+colnames(validMatchesLoserData) <- c("matchId", "height", "age", "rank", "avgAce", "avgDf", "avgBpSavedPercentage", "avgSvptWonPercentage", "winrate", "lastTenWinrate")
+
+```
+
+Stvaramo 3 nova podatkovna okvira: playerOne, playerTwo i playerDifference. Prva 2 podatkovna okvira odgovaraju jedan drugom po retcima, npr. u oba okvira u retku 547 se nalaze podaci o istom meču, samo jedan od njih sadrži sve podatke o gubitniku, a drugi o pobjedniku, s tim da je okvir koji sadrži podatke za pobjednika, odnosno gubitnika, nasumično odabran. Okvir playerDifference predstavlja njihovu razliku:
+
+```{r}
+winnerIndices <- sample(1:23101, size = length(1:23101) * 0.5, replace = FALSE)
+
+playerOne <- rbind(validMatchesWinnerData[winnerIndices, ], 
+                   validMatchesLoserData[-winnerIndices, ]) %>% arrange(matchId)
+playerTwo <- rbind(validMatchesWinnerData[-winnerIndices, ], 
+                   validMatchesLoserData[winnerIndices, ]) %>% arrange(matchId)
+playerDifference <- playerOne - playerTwo
+
+playerDifference$won <- 0
+playerDifference[winnerIndices, "won"] <- 1
+playerDifference$matchId <- NULL
+
+playerDifference
+```
+
+Još je samo potrebno normalizirati podatke:
+
+```{r}
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+playerDifference <- as.data.frame(lapply(playerDifference, normalize))
+
+playerDifference
+```
+
+## Treniranje modela, predikcija i zaključak
+
+Dijelimo obzervacije u skupove podataka za treniranje i predikciju:
+
+```{r}
+set.seed(123)
+
+trainingIndices <- sample(1:nrow(playerDifference), nrow(playerDifference) * 0.7)
+trainingSet <- playerDifference[trainingIndices, ]
+testingSet <- playerDifference[-trainingIndices, ]
+```
+
+Provodimo logističku regresiju:
+
+```{r}
+model <- glm(won ~ ., family = binomial(link = "logit"), data = trainingSet)
+```
+
+Sada pogledajmo ispis rezultata našeg modela:
+
+```{r}
+summary(model)
+```
+
+Za početak bacimo pogled na stupac s imenom "Pr(>|z|)" koji nam ukazuje na to koje su se od varijabli u našem modelu pokazale statistički značajnim: za svaku varijablu nam daje P-vrijednost testa hipoteze da je pripadni koeficijent jednak 0. Možemo zaključiti da su nam za razinu značajnosti od 0.05 statistički značajne sve varijable osim height, avgDf i avgBpSavedPercentage koje ne doprinose efikasnosti modela. Sada pogledajmo koliko je naš model dobar: 
+
+```{r}
+predictions <- predict(model, newdata = testingSet, type = "response")
+predictions <- ifelse(predictions > 0.5, 1, 0)
+
+misClasificError <- mean(predictions != testingSet$won)
+print(paste('Accuracy', 1 - misClasificError))
+```
+
+Preciznost od 66.3973% na skupu podataka od 6931 obzervacija. Ajmo sada opet provesti logističku regresiju, ali bez prethodno spomenutih varijabli:
+
+```{r}
+set.seed(123)
+
+indices <- c(2, 3, 4, 7, 8, 9, 10)
+playerDifference <- playerDifference[, indices]
+trainingIndices <- sample(1:nrow(playerDifference), nrow(playerDifference) * 0.7)
+trainingSet <- playerDifference[trainingIndices, ]
+testingSet <- playerDifference[-trainingIndices, ]
+model <- glm(won ~ ., family = binomial(link = "logit"), data = trainingSet)
+summary(model)
+```
+
+AIC vrijednost je sada malo manja, što je indikator da je ovaj model bolji. Da vidimo koliko je zapravo dobar:
+
+```{r}
+predictions <- predict(model, newdata = testingSet, type = "response")
+predictions <- ifelse(predictions > 0.5, 1, 0)
+
+misClasificError <- mean(predictions != testingSet$won)
+print(paste('Accuracy', 1 - misClasificError))
+```
+
+Sada nam je preciznost još manja ("Dikod uđe, dikod ne uđe" - Mate Baturina). Međutim, unatoč tome možemo zaključiti da je itekako moguće predvidjeti ishod teniskog meča pomoću logističke regresije.
+
+# 4. istraživačko pitanje: Kakva je veza između vrste terena i vjerojatnosti da će mečevi otići u 5. set?
+
+Ovo pitanje možemo riješiti pomoću hi-kvadrat testa homogenosti, s tim da moramo paziti da određene pretpostavke budu zadovoljene. Kako bismo to mogli provjeriti, prvo moramo izolirati željene podatke u obliku pogodnom za obradu. Za početak, idemo učitati sve potrebne podatke:
+
+```{r}
+matches <- fetch_data(1968:2023)
+matches <- matches[, c("surface", "score", "best_of")]
+```
+
+Zatim moramo eliminirati neregularne obzervacije: mečeve za koje ne znamo podlogu na kojoj su odigrani i/ili mečevi u kojima teoretski nije bilo moguće odigrati 5 setova (zbog samog formata natjecanja):
+
+```{r}
+matches %>% filter(!is.na(surface), best_of == 5) -> matches
+matches$best_of <- NULL
+```
+
+Sada dijelimo mečeve u 2 skupa: oni u kojima je odigrano svih 5 setova i oni u kojima nije (NAPOMENA: u ovom 2. slučaju pritom ignoriramo mečeve koji su otkazani zbog neprimjerenog ponašanja igrača, pogreške sudca u organizacijskom smislu, zbog loših vremenskih uvjeta i raznih drugih okolnosti koje "nisu vezane uz sam sport"):
+
+```{r}
+fiveSetMatchesIndices <- which(
+  !str_detect(matches$score, "[^0-9- ]") & str_count(matches$score, "-") == 5)
+fiveSetsMatches <- matches[fiveSetMatchesIndices, ]
+
+lessThanFiveSetsMatches <- matches[-fiveSetMatchesIndices, ]
+lessThanFiveSetsMatches <- filter(lessThanFiveSetsMatches, 
+                                  !str_detect(score, "(Played and unfinished|Played and abandoned|W/O|UNK|DEF|Default)"))
+```
+
+Sada gradimo kontingencijsku tablicu:
+
+```{r}
+fiveSetsMatches %>% group_by(surface) %>% summarise(count = n()) -> fiveSetsMatches
+lessThanFiveSetsMatches %>% group_by(surface) %>% summarise(count = n()) -> lessThanFiveSetsMatches
+
+data <- as.table(rbind(pull(fiveSetsMatches, count), pull(lessThanFiveSetsMatches, count)))
+colnames(data) <- c("Carpet", "Clay", "Grass", "Hard")
+rownames(data) <- c("5 sets played", "Less than 5 sets played")
+probabilities <- data[1, ] / data[2, ] 
+```
+
+Sada provodimo test i gledamo ispise:
+
+```{r}
+test <- chisq.test(data)
+test$observed   
+test$expected   
+test$residuals  
+test$stdres     
+test
+```
+
+S obzirom na to da je vrijednost svake ćelije frekvencija, da svaka obzervacija pripada jednoj ćeliji te da je očekivana vrijednost svake ćelije >= 5, možemo zaključiti da su rezultati ovog testa validni te da vjerojatnost da će meč otići u 5. set ne ovisi o vrsti terena (jako mala P-vrijednost: 2.2e-16)
+
+# 7. istraživačko pitanje: Postoji li razlika u broju odigranih aseva između igrača koji su osvojili Grand Slam naslov i onih koji nisu?
+
+## Učitavanje podataka
+
+Podatke ćemo učitati iz CSV datoteka u listu podatkovnih okvira. Svaki podatkovni okvir sadržava podatke mečeva jedne godine. Nakon toga spajamo sve podatkove okvire u jedan te time imamo informacije o svim odigranim mečevima od 1968. do 2023. godine dostupne u jednom podatkovnom okviru. Iz tog okvira ćemo naknadno izvlačiti potrebne podatke za svrhe analize.
+
+Proces učitavanja podataka je prikazan u sljedećem bloku koda:
+
+```{r}
+matches <- fetch_data(1968:2023)
+```
+
+## Prilagodba tipova podataka
+
+Nakon učitavanja podataka, potrebno je ispraviti tipove podataka za neke stupce. Ti stupci su:
+
+* `surface` - podloga na kojoj se igrao meč: trava, zemlja, tvrda podloga, tepih (eng. grass, clay, hard, carpet)
+* `tourney_level` - razina turnira: Grand Slam, ATP Finals, ATP Masters 1000, ATP Tour, ATP Challengers
+* `tourney_date` - datum održavanja turnira
+* `winner_hand` - ruka s kojom je pobjednik igrao meč: desnoruk, lijevoruk, ambidekster, nepoznato (eng. right-handed ("R"), left-handed ("L"), ambidextrous ("A"), unknown ("U"))
+* `loser_hand` - ruka s kojom je gubitnik igrao meč (definirano isto kao i za winner_hand)
+
+Prilagodba tipova podataka je prikazana u sljedećem kodu:
+
+```{r}
+matches$surface <- factor(
+  matches$surface,
+  levels = c("Grass", "Clay", "Hard", "Carpet")
+)
+matches$tourney_level <- factor(
+  matches$tourney_level,
+  levels = c("F", "A", "D", "M", "G")
+)
+matches$tourney_date <- ymd(matches$tourney_date)
+matches$winner_hand <- factor(
+  matches$winner_hand,
+  levels = c("R", "L", "A", "U")
+)
+matches$loser_hand <- factor(
+  matches$loser_hand,
+  levels = c("R", "L", "A", "U")
+)
+```
+
+## Statistička analiza
+
+### Priprema podataka
+Potrebne su nam dvije glavne grupe u koje ćemo podijeliti igrače:
+
+* igrači s barem jednom osvojenom Grand Slam titulom
+* igrači bez osvojene Grand Slam titule (u daljnjem tekstu ćemo ih nazvati "ostali igrači")
+
+Uz te dvije glavne grupe, stvorit ćemo dodatnu grupu za ostale igrače gdje ih dodatno filtriramo tako da uklonimo igrače koji su ukupno sudjelovali u manje od 7 mečeva. Budući da uspoređujemo prosjeke odigranih asova po meču, želimo izbjeći situacije gdje bi igrači koji su odigrali samo jedan ili dva meča imali velik utjecaj na prosjek cijele grupe. Budući da je za osvajanje titule potrebno odigrati i pobijediti u barem 7 mečeva (za grand slam turnire se inicijalno izvlači 128 sudionika), smatramo da je 7 mečeva minimalna granica koju igrač mora ispuniti da bi bio uključen u usporedbu s igračima koji su osvojili Grand Slam titulu. U daljnjem tekstu ćemo se na tu grupu referirati kao "ostali igrači (n>=7)" i odvojeno ju uspoređivati s igračima koji su osvojili Grand Slam titulu.
+
+Proces izvlačenja i pripreme podataka je prikazan i komentiran u sljedećem bloku koda:
+
+```{r}
+# izrada novog okvira s podatcima o svim igračima (ID, ime, broj asova)
+all_players <- matches %>%
+  dplyr::select(winner_id, winner_name, w_ace) %>%
+  rename(id = winner_id, name = winner_name, aces = w_ace) %>%
+  bind_rows(matches %>%
+    dplyr::select(loser_id, loser_name, l_ace) %>%
+    rename(id = loser_id, name = loser_name, aces = l_ace))
+
+# uklanjanje unosa za koje ne postoje podatci o broju odigranih asova
+all_players <- all_players %>%
+  filter(!is.na(aces))
+
+# grupiranje igrača po ID-u i imenu te izračun prosjeka asova po meču (APM)
+all_players <- all_players %>%
+  group_by(id, name) %>%
+  summarise(aces = sum(aces), matches = n()) %>%
+  mutate(apm = aces / matches)
+
+# filtriranje igrača koji su odigrali >=7 mečeva
+filter_players <- all_players %>%
+  filter(matches >= 7)
+
+# izrada okvira za igrače s naslovom (pobjeda u finalu Grand Slam turnira)
+gs_winners <- matches %>%
+  filter(tourney_level == "G" & round == "F") %>%
+  dplyr::select(winner_id, winner_name) %>%
+  rename(id = winner_id, name = winner_name) %>%
+  distinct(id, name)
+
+# dodavanje stupca s prosjekom asova po meču (apm) za igrače s naslovom
+gs_winners <- gs_winners %>%
+  left_join(all_players, by = c("id", "name")) %>%
+  filter(!is.na(apm))
+
+# izrada okvira za ostale igrače (bez naslova)
+gs_others <- all_players %>%
+  filter(!id %in% gs_winners$id)
+
+# izrada okvira za ostale igrače uz uvjet da su odigrali barem 7 mečeva
+gs_filter1 <- filter_players %>%
+  filter(!id %in% gs_winners$id)
+
+# brisanje privremenih okvira koji su nepotrebni u daljnjem radu
+rm(filter_players)
+```
+
+### Deskriptivna statistika
+
+Sada kada imamo podatke na kojima možemo provoditi analizu, izračunat ćemo osnovne deskriptivne statistike za svaku od grupa. Izračunat ćemo sljedeće vrijednosti:
+
+* prosjek asova svake grupe
+* medijan asova
+* standardnu devijaciju asova
+* minimalnu vrijednost asova svake grupe
+* maksimalnu vrijednost asova svake grupe
+* ukupan broj odigranih mečeva za svaku grupu
+* prosjek asova po meču (APM) cijele grupe
+* broj igrača u svakoj grupi
+
+```{r echo=FALSE}
+# ispis deskriptivne statistike asova za svaku grupu
+gs_winners %>%
+  mutate(id = "Grand Slam pobjednici") %>%
+  bind_rows(gs_others %>%
+    mutate(id = "Ostali igrači")) %>%
+  bind_rows(gs_filter1 %>%
+    mutate(id = "Ostali igrači (n>=7)")) %>%
+  bind_rows(all_players %>%
+    mutate(id = "Svi igrači")) %>%
+  group_by(id) %>%
+  summarise(
+    mean_aces = mean(aces),
+    median_aces = median(aces),
+    sd_aces = sd(aces),
+    min_aces = min(aces),
+    max_aces = max(aces),
+    total_matches = sum(matches),
+    group_apm = sum(aces) / sum(matches),
+    n_players = n()
+  ) %>%
+  knitr::kable(
+    caption = "Servirani asovi po grupama",
+    digits = 2
+  )
+```
+
+Uz tablicu s deskriptivnim statistikama, možemo i vizualizirati podatke kako bismo dobili bolji uvid u njih. Za to ćemo koristiti boxplotove za broj asova i srednje vrijednost asova po mečevima (APM) igrača te dijagrame gustoće za prosjek asova po meču kako bismo dobili uvid u distribuciju podataka. Za svaku od grupa ćemo izraditi zasebne vizualizacije kako bismo mogli usporediti podatke između grupa. Uz to, izradit ćemo i vizualizacije za sve igrače kako bismo dobili uvid u distribuciju podataka za cijelu populaciju igrača.
+
+Boxplotovi broja asova i APM-ova za svaku grupu:
+
+```{r, echo=FALSE}
+# izrada boxplot dijagrama za broj asova svake grupe
+ggplot() +
+  geom_boxplot(data = gs_winners, aes(x = aces, y = "Grand Slam pobjednici")) +
+  geom_boxplot(data = gs_others, aes(x = aces, y = "Ostali igrači")) +
+  geom_boxplot(data = gs_filter1, aes(x = aces, y = "Ostali igrači (n>=7)")) +
+  geom_boxplot(data = all_players, aes(x = aces, y = "Svi igrači")) +
+  labs(x = "Broj asova", y = "Grupa igrača") +
+  theme_bw()
+
+# izrada boxplot dijagrama APM-ova svake grupe
+ggplot() +
+  geom_boxplot(data = gs_winners, aes(x = apm, y = "Grand Slam pobjednici")) +
+  geom_boxplot(data = gs_others, aes(x = apm, y = "Ostali igrači")) +
+  geom_boxplot(data = gs_filter1, aes(x = apm, y = "Ostali igrači (n>=7)")) +
+  geom_boxplot(data = all_players, aes(x = apm, y = "Svi igrači")) +
+  labs(x = "APM igrača", y = "Grupa igrača") +
+  theme_bw()
+```
+
+Iz boxplot dijagrama možemo vidjeti kako je distribucija asova igrača jako nakošena na lijevu stranu te kako ima jako puno ekstremnih vrijednosti, što i ima smisla jer broj asova ultimativno ovisi o ukupnom broju mečeva koje je igrač odigrao tijekom svoje karijere.
+
+Zbog toga ćemo usporedbu broja asova između grupa raditi kroz srednju vrijednost asova po mečevima (APM) igrača. Kroz APM dobivamo jedinstvenu mjeru koja ne ovisi o broju mečeva koje je igrač odigrao te je stoga pogodnija za usporedbu između grupa.
+
+U boxplot dijagramu APM-ova možemo stoga primijetiti kako su distribucije APM-ova puno manje nakošene te imaju puno manje ekstremnih vrijednosti.
+
+Deskriptivna statistika APM-ova za svaku grupu je sljedeća:
+
+```{r, echo=FALSE}
+# ispis deskriptivne statistike APM-ova za svaku grupu
+gs_winners %>%
+  mutate(id = "Grand Slam pobjednici") %>%
+  bind_rows(gs_others %>%
+    mutate(id = "Ostali igrači")) %>%
+  bind_rows(gs_filter1 %>%
+    mutate(id = "Ostali igrači (n>=7)")) %>%
+  bind_rows(all_players %>%
+    mutate(id = "Svi igrači")) %>%
+  group_by(id) %>%
+  summarise(
+    mean_apm = mean(apm),
+    median_apm = median(apm),
+    sd_apm = sd(apm),
+    min_apm = min(apm),
+    max_apm = max(apm),
+    n_players = n()
+  ) %>%
+  knitr::kable(
+    caption = "APM igrača po grupama",
+    digits = 3
+  )
+```
+
+Kako bismo dobili bolji uvid u samu distribuciju APM-ova grupa, izradit ćemo dijagrame gustoće za svaku grupu:
+
+```{r, echo=FALSE}
+# izrada grafova gustoće APM-ova za svaku grupu
+gs_winners %>%
+  mutate(id = "Grand Slam pobjednici") %>%
+  bind_rows(gs_others %>%
+    mutate(id = "Ostali igrači")) %>%
+  bind_rows(gs_filter1 %>%
+    mutate(id = "Ostali igrači (n>=7)")) %>%
+  bind_rows(all_players %>%
+    mutate(id = "Svi igrači")) %>%
+  ggplot(aes(x = apm, fill = id)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~id, ncol = 2) +
+  labs(x = "APM igrača", y = "Gustoća igrača za APM") +
+  theme_bw()
+```
+
+Iz dijagrama gustoća svake od grupa možemo vidjeti kako su podatci uistinu još uvijek lijevo nakošeni te vjerojatno nisu normalno distribuirani. Zbog toga ćemo prvo trebati provjeriti normalnost podataka kako bismo mogli odlučiti koje testove ćemo koristiti za usporedbu grupa.
+
+### Statističko testiranje
+
+Nakon vizualnog uvida u podatke i izračunatih deskriptivnih statistika, možemo započeti statističko testiranje kako bismo dobili odgovor na temeljno pitanje ovog istraživanja: ***Postoji li razlika u broju odigranih aseva između igrača koji su osvojili Grand Slam naslov i onih koji nisu?***
+
+#### Normalnost uzoraka
+
+Kako bismo odlučili hoćemo li koristiti parametarske ili neparametarske testove, potrebno je provjeriti normalnost podatako. Za to ćemo iskoristiti Kolmogorov-Smirnovljev test. Budući da smo već ranije zaključili da je APM pogodniji za usporedbu grupa, provjerit ćemo normalnost samo za APM-ove.
+
+Prije provođenja Kolmogorov-Smirnovljevog testa postavljamo sljedeće hipoteze:
+
+* H0: Podatci su normalno distribuirani
+* H1: Podatci nisu normalno distribuirani
+
+Za test uzimamo razinu značajnosti od 0.05.
+
+```{r, echo=FALSE, warning=FALSE}
+# provjera normalnosti APM-ova za svaku grupu i vizualizacija
+ggplot(
+  data = gs_winners,
+  aes(x = apm)
+) +
+  stat_ecdf(geom = "step", pad = FALSE) +
+  stat_function(
+    fun = pnorm,
+    args = list(mean = mean(gs_winners$apm), sd = sd(gs_winners$apm)),
+    color = "red"
+  ) +
+  labs(x = "APM igrača", y = "CDF") +
+  ggtitle("Grand Slam pobjednici") +
+  theme_bw()
+
+ks.test(
+  gs_winners$apm,
+  "pnorm",
+  mean = mean(gs_winners$apm),
+  sd = sd(gs_winners$apm),
+  exact = TRUE
+)
+
+ggplot(
+  data = gs_others,
+  aes(x = apm)
+) +
+  stat_ecdf(geom = "step", pad = FALSE) +
+  stat_function(
+    fun = pnorm,
+    args = list(mean = mean(gs_others$apm), sd = sd(gs_others$apm)),
+    color = "red"
+  ) +
+  labs(x = "APM igrača", y = "CDF") +
+  ggtitle("Ostali igrači") +
+  theme_bw()
+
+ks.test(
+  gs_others$apm,
+  "pnorm",
+  mean = mean(gs_others$apm),
+  sd = sd(gs_others$apm),
+  exact = TRUE
+)
+
+ggplot(
+  data = gs_filter1,
+  aes(x = apm)
+) +
+  stat_ecdf(geom = "step", pad = FALSE) +
+  stat_function(
+    fun = pnorm,
+    args = list(mean = mean(gs_filter1$apm), sd = sd(gs_filter1$apm)),
+    color = "red"
+  ) +
+  labs(x = "APM igrača", y = "CDF") +
+  ggtitle("Ostali igrači (n>=7)") +
+  theme_bw()
+
+ks.test(
+  gs_filter1$apm,
+  "pnorm",
+  mean = mean(gs_filter1$apm),
+  sd = sd(gs_filter1$apm),
+  exact = TRUE
+)
+```
+
+Kao što možemo vidjeti iz dijagrama i rezultata Kolmogorov-Smirnovljevog testa, jedino uzorak igrača s Grand Slam naslovom prolazi test normalnosti, dok ostali, zbog činjenice da su uzorci puno veći, ne prolaze test te za njih odbacujemo H0 hipotezu uz razinu značajnosti od 0.05.
+
+Zbog toga ćemo morati koristiti neparametarske testove za usporedbu grupa.
+
+#### Neparametarsko testiranje
+
+Sada kada smo utvrdili da su uzorci nenoormalno distribuirani, možemo koristiti neparametarske testove za usporedbu grupa. Budući da uspoređujemo dvije grupe, koristit ćemo Mann-Whitney U test. Prije provođenja testa postavljamo sljedeće hipoteze:
+
+* H0: Nema razlike u prosjeku APM-ova između grupa (uzorci dolaze iz iste populacije)
+* H1: Postoji razlika u prosjeku APM-ova između grupa (jedan uzorak stohastički dominira)
+
+Za ovaj test također uzimamo razinu značajnosti od 0.05.
+  
+```{r, echo=FALSE}
+# provođenje Mann-Whitney U testa između igrača s naslovom i ostalih igrača
+wilcox.test(
+  gs_winners$apm,
+  gs_others$apm,
+  alternative = "two.sided",
+  paired = FALSE,
+  exact = FALSE,
+  correct = TRUE
+)
+
+# provođenje Mann-Whitney U testa između igrača s naslovom i ostalih igrača (n>=7)
+wilcox.test(
+  gs_winners$apm,
+  gs_filter1$apm,
+  alternative = "two.sided",
+  paired = FALSE,
+  exact = FALSE,
+  correct = TRUE
+)
+```
+
+Kao što možemo vidjeti iz rezultata testa, u oba slučaja odbacujemo H0 hipotezu uz razinu značajnosti od 0.05. To znači da postoji razlika u prosjeku APM-ova između grupa igrača s osvojenim Grand Slam naslovom i ostalih igrača. Uz to, možemo primijetiti kako je razlika u prosjeku APM-ova između uzorka igrača s naslovom i ostalih igrača puno veća nego između uzorka igrača s naslovom i filtriranih ostalih igrača.
+
+## Zaključak
+
+U ovom istraživanju smo pokušali odgovoriti na pitanje postoji li razlika u broju odigranih aseva između igrača koji su osvojili Grand Slam naslov i onih koji nisu. Kako bismo odgovorili na to pitanje, analizirali smo podatke o svim odigranim mečevima od 1968. do 2023. godine. Nakon pripreme podataka, izračunavanja deskriptivnih statistika i vizualizacije podataka, zaključili smo da postoji razlika u prosjeku APM-ova između igrača koji su osvojili Grand Slam naslov i onih koji nisu. Uz to, možemo primijetiti kako je razlika u prosjeku APM-ova između uzorka igrača s naslovom i ostalih igrača puno veća nego između uzorka igrača s naslovom i filtriranih ostalih igrača. Iz toga možemo zaključiti da postoji razlika u broju odigranih aseva između igrača koji su osvojili Grand Slam naslov i onih koji nisu te da je ta razlika puno veća nego što se može objasniti činjenicom da igrači koji su osvojili Grand Slam naslov imaju više odigranih mečeva od ostalih igrača. Iz toga možemo zaključiti da bi broj odigranih aseva mogao biti jedan od faktora koji utječu na osvajanje Grand Slam naslova.
+
+```{r, echo=FALSE, include=FALSE}
+# oslobađanje memorije
+rm(all_players, gs_winners, gs_others, gs_filter1)
+```
