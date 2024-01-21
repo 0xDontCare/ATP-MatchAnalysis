@@ -1,0 +1,401 @@
+---
+title: "Možemo li procijeniti broj asova koje će igrač odservirati u tekućoj (zadnjoj dostupnoj sezoni) na temelju njegovih rezultata iz prethodnih sezona?"
+author: "Katarina Zec"
+date: "2024-01-19"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = FALSE}
+library(dplyr)
+library(ggplot2)
+```
+
+## Previđanje broja aseva u trenutnoj sezoni na temelju podataka iz prethodnih sezona
+
+Statistika je jedna od glavnih znanosti koje se vežu uz sport. Jedan od najpoznatijih pojmova koji se vežu uz tenis je zasigurno pojam asa. Pojam označava uspješan servis pri kojem protivnik nije dotaknuo serviranu lopticu. Asevi su najsigurniji i gotovo najlakše dobiveni poeni u tenisu, gotovo poput zakucavanja u košarci.
+
+Postavlja se pitanje: možemo li uz pomoć programskog jezika R i statistika o ATP mečevima od 1968. do 2022. godine predvidjeti koliko će aseva određeni igrač imati u tekućoj sezoni?
+
+Pogledamo li dataframe s podacima nakon uvoza svih .csv datoteka, primjećujemo da se statistika o broju aseva po meču za pobjednika i gubitnika počela bilježiti tek 1991. godine. Stoga, kada uvozimo podatke, izuzimamo sve retke čija je vrijednost varijable w_ace ili l_ace jednaka NA.
+
+```{r}
+# Dohvaćanje popisa .csv datoteka u direktoriju
+tennis_files <- list.files(path = "./ATP-Matches/", pattern = "\\.csv$", full.names = TRUE)
+
+# Inicijalizacija praznog dataframe-a za čuvanje podataka
+tennis_dataset <- data.frame()
+
+# Iteracija kroz svaku .csv datoteku
+for (datoteka in tennis_files) {
+  # Učitavanje .csv datoteke
+  podaci <- read.csv(datoteka)
+  
+  # Uklanjanje redova s NA vrijednostima u w_ace i l_ace
+  podaci_bez_na <- podaci[complete.cases(podaci$w_ace, podaci$l_ace), ]
+  
+  # Dodavanje učitanih podataka u dataset
+  tennis_dataset <- rbind(tennis_dataset, podaci_bez_na)
+}
+
+```
+
+## Odabir potrebnih parametara
+
+Da bismo mogli kreirati model višestruke linearne regresije, moramo znati koje od dostupnih varijabli utječu na traženu zavisnu varijablu.
+
+Pogledamo li dostupne varijable iz zadanog dataseta, vidimo da možemo eliminirati podatke o identifikaciji meča, kao što su podaci o rundi turnira, rezultat, država iz koje igrač dolazi, način na koji je igrač došao na turnir...
+
+Zadržat ćemo podatke o performansu igrača u meču:
+
+-   broj aseva
+
+-   dvostruke pogreške
+
+-   uspješnih prvih i drugih servisa
+
+-   dobivenih prvih servisa
+
+-   serviranih gejmova
+
+-   odigranih *breakova* i spašenih *breakova*
+
+Informacije o visini i dominantnoj ruci igrača nećemo uzimati u obzir budući da, iako imaju utjecaj na servis igrača i samim time na broj aseva koje igrač postigne u karijeri, ostaju iste kroz karijeru pojedinca.
+
+```{r}
+# Kreirajte dataframe za pobjednike
+winners <- tennis_dataset[, c("winner_id", "winner_name", "tourney_id", "surface",  "winner_age",  "winner_rank",  "w_ace", "w_df", "w_svpt", "w_1stIn", "w_1stWon", "w_2ndWon", "w_SvGms", "w_bpSaved", "w_bpFaced", "minutes" )]
+
+colnames(winners) <- c("player_id", "name", "tour_id", "surface",  "age", "rank", "ace", "double_fault", "saved points", "1st serves made", "1st serves won", "2nd serves won", "served games", "saved breaks", "faced breaks", "minutes")
+
+# Kreirajte dataframe za gubitnike
+losers <- tennis_dataset[, c("loser_id", "loser_name", "tourney_id", "surface", "loser_age",  "loser_rank",  "l_ace", "l_df", "l_svpt", "l_1stIn", "l_1stWon", "l_2ndWon", "l_SvGms", "l_bpSaved", "l_bpFaced", "minutes" )]
+
+colnames(losers) <- c("player_id", "name", "tour_id", "surface", "age", "rank", "ace", "double_fault", "saved points", "1st serves made", "1st serves won", "2nd serves won", "served games", "saved breaks", "faced breaks", "minutes")
+
+all_players_stats <- rbind(winners, losers)
+
+stats_per_player <- split.data.frame(all_players_stats, all_players_stats[["name"]])
+```
+
+## Izbor igrača na temelju čijih se podata izrađuje model
+
+Nakon što smo napravili potrebne redukcije i transformacije na originalnom datasetu, dobili smo popis sa 2425 elemenata, tj. popis od 2425 igrača. Za svakog od njih imamo podatke o svim teniskim mečevima koje su odigrali u sklopu ATP turnira. Budući da ne možemo napraviti linearnu regresiju s malim brojem mečeva, izbacujemo sve igrače za koje imamo manje od 30 mečeva.
+
+```{r}
+reduced_stats_per_player <- Filter(function(dataset) nrow(dataset) >= 30, stats_per_player)
+```
+
+Nakon odabira igrača na temelju čijih podataka će se napraviti model linearne regresije, uvodimo novu varijablu "year" na temelju koje ćemo razdvojiti podatke u set za treniranje modela i set za testiranje modela.
+
+Kao primjer uzet ćemo podatke za Davida Ferrera. David Ferrer je odabran primarno zbog velikog broja dostupnih podataka.
+
+```{r}
+player_stats <- subset(reduced_stats_per_player$`David Ferrer`)
+```
+
+```{r, echo = FALSE}
+player_stats$year <- strtoi(substr(player_stats$tour_id, 1, 4))
+
+last_available_season <- max(player_stats$year)
+
+train_data <- subset(player_stats, year <= last_available_season)
+test_data <- subset(player_stats, year == last_available_season)
+```
+
+Nakon podijele dostupnog dataseta na dva podseta koji će poslužiti za "trening" modela i kasnije testiranje istog, prelazimo na identifikaciju vrijednosti koje uistinu utječu na servis i broj aseva.
+
+## Obrada parametara
+
+Započnimo s uvođenjem dummy varijabli za kategorijsku varijablu surface:
+
+```{r}
+#Dummy varijable za surface
+dummy_df <- data.frame(model.matrix(~ surface - 1, data = player_stats))
+```
+
+Prelazimo na ispitivanje koje od dostupnih varijabli uistinu utječu na broj aseva u sezoni. Pretpostavka je da će nam bitne biti isključivo varijable vezane uz uspješnost servisa, učestalost servisa, te uz vrstu podloge na kojoj se igra. Provjerimo također imaju li iskustvo i rang na ljestvici na kojem se igrač nalazi koorelaciju s brojem aseva u meču.
+
+```{r}
+linearnost_2serv <- lm(ace~train_data$`2nd serves won`, data = as.data.frame(train_data))
+```
+
+```{r, echo = FALSE}
+linearnost_godina <- lm(ace~train_data$age, data = as.data.frame(train_data))
+
+linearnost_ranga <- lm(ace~train_data$rank, data = as.data.frame(train_data))
+
+linearnost_dvostrukih <- lm(ace~train_data$double_fault, data = as.data.frame(train_data))
+
+linearnost_podloga <- lm(ace~train_data$surface, data = as.data.frame(train_data))
+
+linearnost_1serv <- lm(ace~train_data$`1st serves made`, data = as.data.frame(train_data))
+
+linearnost_1won <- lm(ace~train_data$`1st serves won`, data = as.data.frame(train_data))
+linearnost_svg <- lm(ace~train_data$`served games`, data = as.data.frame(train_data))
+```
+
+```{r}
+par(mfrow = c(2, 3))
+
+plot(player_stats$`2nd serves won`, player_stats$ace) 
+lines(player_stats$`2nd serves won`, linearnost_2serv$fitted.values, col='red')
+
+plot(player_stats$`1st serves made`, player_stats$ace) 
+lines(player_stats$`1st serves made`, linearnost_1serv$fitted.values, col='red')
+
+plot(player_stats$`1st serves won`, player_stats$ace) 
+lines(player_stats$`1st serves won`, linearnost_1won$fitted.values, col='red')
+
+par(mfrow = c(2, 3))
+
+plot(player_stats$age, player_stats$ace) 
+lines(player_stats$age, linearnost_godina$fitted.values, col='red')
+
+
+plot(player_stats$double_fault, player_stats$ace) 
+lines(player_stats$double_fault, linearnost_dvostrukih$fitted.values, col='red')
+
+plot(player_stats$`served games`, player_stats$ace) 
+lines(player_stats$`served games`, linearnost_svg$fitted.values, col='red')
+
+par(mfrow = c(1, 2))
+
+plot(player_stats$rank, player_stats$ace) 
+lines(player_stats$rank, linearnost_ranga$fitted.values, col='red')
+
+```
+
+Vidimo da, kao što je pretpostavljeno, podaci kao što su broj serviranih gejmova, broj uspješnih prvih servisa, broj osvojenih prvih servisa, broj drugih servisa, te dvostrukih pogrešaka imaju linearnu razdiobu u ovisnosti o broju aseva u meču.
+
+Na dijagramima za rang i godine nije vidljiva značajna koorelacija, tako da te dvije varijable izbacujemo iz modela.
+
+## Ispitivanje normalnosti reziduala
+
+Budući da je jedan od uvjeta linearne regresije normalnost reziduala, provjeravamo reziduale jednostavnih linearnih regresija za svaku od potrebnih varijabli. Idealno, to se može napraviti korištenjem Kolmogorov-Smirnovljevog testa, no on je osjetljiv na velike uzorke. Ovdje su već na početku eliminirani svi igrači koji imaju manje od 30 odigranih mečeva, tako da normalnost nikako nećemo testirati Kolmogorov-Smirnovljevim testom.
+
+Radi praktičnosti, koristimo histograme i provjeravamo oblikuju li reziduali zvonoliku krivulju:
+
+```{r, echo = FALSE}
+par(mfrow = c(2, 3))
+
+hist((linearnost_1serv$residuals), main = "Reziduali prvog servisa")
+
+hist((linearnost_1won$residuals), main = "Reziduali dobivenih prvih servisa")
+
+hist((linearnost_2serv$residuals), main = "Reziduali dobivenih drugih servisa")
+
+hist((linearnost_svg$residuals), main = "Reziduali serviranih gejmova")
+
+hist((linearnost_dvostrukih$residuals), main = "Reziduali dvostrukih pogrešaka")
+```
+
+Vidimo da sve varijable daju zvonoliku krivulju uz poneke "repiće". Njih tretiramo izbacivanjem outliera iz seta podataka. To će nam omogućiti dobivanje boljeg modela višestruke regresije.
+
+```{r, echo = FALSE}
+outlier_removal <- function(x, t = 1.5) {
+  q1 <- quantile(x, 0.25)
+  q3 <- quantile(x, 0.75)
+  iqr <- q3 - q1
+  LB <- q1 - t * iqr
+  UB <- q3 + t * iqr
+  outliers <- x < LB | x > UB
+  return(outliers)
+}
+
+used_vars <- c("1st serves made", "1st serves won", "2nd serves won", "double_fault", "served games")
+
+# Apply the function to each numeric variable
+outliers <- apply(player_stats[, used_vars], 2, outlier_removal)
+
+# Identify rows with outliers in at least one variable
+rows_with_outliers <- apply(outliers, 1, any)
+
+# Remove rows with outliers
+player_stats_no_outliers <- player_stats[!rows_with_outliers, ]
+
+train_data <- subset(player_stats_no_outliers, year <= last_available_season)
+test_data <- subset(player_stats_no_outliers, year == last_available_season)
+```
+
+```{r, echo = FALSE}
+linearnost_2serv <- lm(ace~train_data$`2nd serves won`, data = as.data.frame(train_data))
+
+linearnost_dvostrukih <- lm(ace~train_data$double_fault, data = as.data.frame(train_data))
+
+linearnost_podloga <- lm(ace~train_data$surface, data = as.data.frame(train_data))
+
+linearnost_1serv <- lm(ace~train_data$`1st serves made`, data = as.data.frame(train_data))
+
+linearnost_1won <- lm(ace~train_data$`1st serves won`, data = as.data.frame(train_data))
+
+linearnost_svg <- lm(ace~train_data$`served games`, data = as.data.frame(train_data))
+
+
+par(mfrow = c(2, 3))
+
+hist((linearnost_1serv$residuals), main = "Reziduali prvog servisa")
+
+hist((linearnost_1won$residuals), main = "Reziduali dobivenih prvih servisa")
+
+hist((linearnost_2serv$residuals), main = "Reziduali dobivenih drugih servisa")
+
+hist((linearnost_svg$residuals), main = "Reziduali serviranih gejmova")
+
+hist((linearnost_dvostrukih$residuals), main = "Reziduali dvostrukih pogrešaka")
+```
+
+## Kreiranje modela višestruke linearne regresije
+
+Na temelju selektiranih podataka izrađujemo model višestruke regresije. Nakon dobivanja modela, procjenjujemo kvalitetu istog. Osim uobičajenih parametara kvalitete testa koje dobivamo korištenjem funkcije summary(), za procjenu modela linearne regresije koristimo i metodu najmanjih kvadrata (SSE) i srednju kvadratnu pogrešku (MSE).
+
+```{r}
+# Kreiranje modela na temelju podataka iz trening-seta
+model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + train_data$`1st serves won` + train_data$double_fault + train_data$`2nd serves won`+ train_data$`served games` , data = as.data.frame(train_data))
+
+summary(model_igraca)
+
+# Procjena performansi modela na test setu
+predicted_aces_test <- predict(model_igraca, predicted_data = as.data.frame(test_data))
+mse <- mean((test_data$ace - predicted_aces_test)^2)
+sse <- ((test_data$ace - predicted_aces_test)^2)
+print(paste("Mean Squared Error (MSE):", mse))
+tail(paste("Squared Sum Error (SSE): ", sse))
+
+qqnorm(residuals(model_igraca))
+qqline(residuals(model_igraca))
+
+plot(density(residuals(model_igraca)), main = "Density Plot of Residuals")
+```
+
+### Pokazatelji kvalitete modela
+
+Da bi model bio dobar, vrijednosti SSE-a i MSE-a moraju biti što bliže nuli. Vidljivo je da, iako SSE uvelike varira u svojim vrijednostima, MSE ima relativno prihvatljiv rezultat od 7.71. Premda je ta brojka zadovoljavajuća, pogled na druge parametre modela ukazuje na činjenicu da odabrane nezavisne varijable nisu idealan pokazatelj kvalitete servisa igrača. Pogledamo li p-vrijednosti koeficijenata, vidimo da u slučaju Davida Ferrera možemo izbaciti dvostruke pogreške i broj serviranih gejmova iz modela.
+
+### Prilagođavanje odabira parametara
+
+Napravimo li model bez te dvije varijable, vidmo da se vrijednost MSE-a poveća na 9.16.
+
+Još jedan pokazatelj kvalitete modela je višestruki R kvadrat i prilagođeni R kvadrat. Oni ukazuju na kvalitetu izabranih prediktora u modelu. Raspon im je od 0 do 1, gdje 1 ukazuje na bolje odabrane prediktore i model koji dobro predviđa tražene vrijednosti. Prilagođeni R kvadrat kažnjava nepotrebno dodane prediktore. Uistinu, nakon uklanjanja dvostrukih pogrešaka i serviranih gejmova iz modela, dobivamo bolju vrijednost R kvadrata.Ta vrijednost niti nakon uklanjanja nepotrebnih prediktora nije dobra, što ukazuje na činjenicu da postoje faktori koje nismo uključili u model.
+
+```{r, echo = FALSE}
+train_data <- subset(player_stats, year <= last_available_season)
+to_test <- subset(player_stats, year == last_available_season)
+```
+
+```{r}
+# Kreiranje modela na trening setu
+model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + train_data$`1st serves won` +  train_data$`2nd serves won`, data = as.data.frame(train_data))
+
+summary(model_igraca)
+```
+
+```{r, echo = FALSE}
+# Evaluacija performansi modela na test setu
+predicted_aces_test <- predict(model_igraca, predicted_data = as.data.frame(test_data))
+mse <- mean((test_data$ace - predicted_aces_test)^2)
+sse <- ((test_data$ace - predicted_aces_test)^2)
+print(paste("Mean Squared Error (MSE) na test setu:", mse))
+tail(paste("Squared Sum Error (SSE) na test setu: ", sse))
+
+qqnorm(residuals(model_igraca))
+qqline(residuals(model_igraca))
+
+plot(density(residuals(model_igraca)), main = "Density Plot of Residuals")
+```
+
+Osim parametara modela, gledamo i normalnost reziduala. Pogledamo li dijagram gustoće reziduala, vidimo da dobivamo zvonoliku krivulju, što ukazuje da su reziduali normalno distribuirani.
+
+## Možemo li zaključiti da je linearnom regresijom moguće predvidjeti broj aseva u sezoni?
+
+Premda bismo mogli na temelju dosadašnjih saznanja mogli zaključiti da je moguće predvidjeti broj aseva koje će igrač odigrati u tekućoj sezoni, provođenjem izračuna na temelju podataka nekog drugog igrača, na primjer Novaka Đokovića, dolazimo do saznanja da do sada korišteni model ne funkcionira za sve igrače jednako:
+
+```{r}
+player_stats <- subset(reduced_stats_per_player$`Novak Djokovic`)
+```
+
+```{r, echo = FALSE}
+player_stats$year <- strtoi(substr(player_stats$tour_id, 1, 4))
+
+last_available_season <- max(player_stats$year)
+
+train_data <- subset(player_stats, year <= last_available_season)
+test_data <- subset(player_stats, year == last_available_season)
+
+outlier_removal <- function(x, t = 1.5) {
+  q1 <- quantile(x, 0.25)
+  q3 <- quantile(x, 0.75)
+  iqr <- q3 - q1
+  LB <- q1 - t * iqr
+  UB <- q3 + t * iqr
+  outliers <- x < LB | x > UB
+  return(outliers)
+}
+
+used_vars <- c("1st serves made", "1st serves won", "2nd serves won", "double_fault", "served games")
+
+# Apply the function to each numeric variable
+outliers <- apply(player_stats[, used_vars], 2, outlier_removal)
+
+# Identify rows with outliers in at least one variable
+rows_with_outliers <- apply(outliers, 1, any)
+
+# Remove rows with outliers
+player_stats_no_outliers <- player_stats[!rows_with_outliers, ]
+
+train_data <- subset(player_stats_no_outliers, year <= last_available_season)
+test_data <- subset(player_stats_no_outliers, year == last_available_season)
+```
+
+```{r}
+# Kreiranje modela na temelju podataka iz trening-seta
+model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + train_data$`1st serves won` + train_data$double_fault + train_data$`2nd serves won`+ train_data$`served games` , data = as.data.frame(train_data))
+
+summary(model_igraca)
+
+# Procjena performansi modela na test setu
+predicted_aces_test <- predict(model_igraca, predicted_data = as.data.frame(test_data))
+mse <- mean((test_data$ace - predicted_aces_test)^2)
+sse <- ((test_data$ace - predicted_aces_test)^2)
+print(paste("Mean Squared Error (MSE):", mse))
+tail(paste("Squared Sum Error (SSE): ", sse))
+
+qqnorm(residuals(model_igraca))
+qqline(residuals(model_igraca))
+
+plot(density(residuals(model_igraca)), main = "Dijagram gustoće reziduala")
+```
+
+Pogledamo li sažetak modela za Novaka Đokovića, vidimo da kod njega možemo odbaciti dvostruke pogreške iz modela, dok je broj serviranih gejmova vrlo značajan za broj aseva. Ukanjanjem tog prediktora blago povećamo vrijednost R kvadrata i MSE-a.
+
+```{r}
+# Kreiranje modela na temelju podataka iz trening-seta
+model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + train_data$`1st serves won` + train_data$`2nd serves won`+ train_data$`served games` , data = as.data.frame(train_data))
+
+summary(model_igraca)
+```
+
+```{r, echo = FALSE}
+# Procjena performansi modela na test setu
+predicted_aces_test <- predict(model_igraca, predicted_data = as.data.frame(test_data))
+mse <- mean((test_data$ace - predicted_aces_test)^2)
+sse <- ((test_data$ace - predicted_aces_test)^2)
+print(paste("Mean Squared Error (MSE):", mse))
+tail(paste("Squared Sum Error (SSE): ", sse))
+
+qqnorm(residuals(model_igraca))
+qqline(residuals(model_igraca))
+
+plot(density(residuals(model_igraca)), main = "Dijagram gustoće reziduala")
+```
+
+## Zaključak
+
+Gledajući dobivene rezultate, zaključuje se da je korištenjem linearne regresije moguće dobiti broj aseva koje će igrač odservirati u tekućoj sezoni, no s relativno malom sigurnošću. U modelima dobivenima u ovom zadatku, ta se sigurnost kreće između 30 i 36 posto. Evidendno je da je model na dobrom tragu, no postoje "skriveni" prediktori koji nam nisu dostupni iz dobivenih podataka.
+
+Pri kreiranju modela potrebno je analizirati svakog igrača zasebno. Pokazano je da prediktori koji su značajni za jednog igrača nemaju nikakvog utjecaja na broj aseva drugog, i samo narušavaju kvalitetu kreiranog modela.
+
+
