@@ -36,7 +36,10 @@ fetch_data <- function(years) {
   for (year in years) {
     file_path <- paste0("./ATP-Matches/atp_matches_", year, ".csv")
     if (file.exists(file_path)) {
-      df <- read_csv(file_path, col_types = "cccnccnnncccncnnncccncncncnnnnnnnnnnnnnnnnnnnnnnn", show_col_types = FALSE)
+      df <- 
+        read_csv(file_path, col_types = 
+                   "cccnccnnncccncnnncccncncncnnnnnnnnnnnnnnnnnnnnnnn", 
+                 show_col_types = FALSE)
       df_list[[as.character(year)]] <- df
     } else {
       warning(paste("File not found for year", year))
@@ -53,16 +56,16 @@ fetch_data <- function(years) {
 
 # 1. istrazivačko pitanje: Kakva je distribucija mečeva na specifičnim podlogama u različitim godišnjim dobima?
 
-Dohvaćamo potrebne podatke i malo uređujemo:
+U ovom istraživačkom pitanju ćemo koristiti podatke iz perioda 1968-2023. Za početak, dohvatimo potrebne podatke, uklonimo neregularne obzervacije (one mečeve za koje ne znamo na kojoj podlozi su odigrani) te pretvorimo datume u objekte tipa "date":
 
 ```{r}
 matches <- fetch_data(1968:2023)
 
-matches$tourney_date <- ymd(matches$tourney_date)
 matches <- filter(matches, !is.na(surface))
+matches$tourney_date <- ymd(matches$tourney_date)
 ```
 
-Za svaku obzervaciju određujemo kojem godišnjem dobu pripada: 
+Kako bismo odredili u kojem godišnjem dobu je odigran meč, za to kreiramo specifičnu funkciju "getSeason()": 
 
 ```{r}
 getSeason <- function(DATES) {
@@ -81,7 +84,7 @@ getSeason <- function(DATES) {
 matches$season <- getSeason(matches$tourney_date)
 ```
 
-Izvlacenje potrebnih podataka i njihova vizualizacija:
+Sada kada imamo sve potrebne informacije za svaki meč, još nam jedino ostaje vizualizacija i pregled rezultata:
 
 ```{r}
 ggplot(matches, aes(x = surface)) +
@@ -91,6 +94,97 @@ ggplot(matches, aes(x = surface)) +
      x = "Surface", y = "Number of Matches")  
 
 ```
+ 
+Zbog hladnog vremena zimi se većina mečeva igra u zatvorenim prostorima na tvrdoj podlozi i tepihu, u proljeće dominira šljaka na kojoj se između ostalog između sredine svibnja i ranog lipnja u Parizu održava French Open, ljeti su podjednako zastupljene šljaka i tvrda podloga s tim da se naglo povećava i broj mečeva na travi na kojoj se između ostalog u to vrijeme igra i famozni Wimbeldon, dok u jesen opet dominira tvrda podloga na kojoj se krajem kolovoza igra US Open.
+
+# 2. istraživačko pitanje: Postoji li značajna razlika u prosječnom broju dvostrukih pogrešaka između mečeva odigranih na otvorenom u odnosu na mečeve odigrane na zatvorenom terenu?
+
+## Postavljanje problema
+
+Prvi problem u riješavanju ovog zadatka bila je kategorizacija mečeva na one igrane na otvorenom i one igrane na zatvorenom terenu, budući da dataset nije sadržavao tu specifičnu kategoriju podataka. Odlučili smo se za pristup koji svrstava mečeve u one na otvorenom ili zatvorenom terenu na temelju podloge na kojoj su odigrani. Nakon toga moramo analizirati svojstva ovih dviju distribucija. Dobijemo li da su jednake zaključujemo da ne postoji značajna razlika u broju dvostrukih pogrešaka među mečevima odigranima na zatvorenim i otvorenim terenima. U suprotnom pokazat cemo da razlika postoji.
+
+## Priprema podataka
+
+Podatke smo pripremili tako da smo čitav skup podataka spojili u podatkovni okvir, iz tog okvira izbacili smo sve stupce koji nas ne zanimaju u kontekstu ovog zadatke (sve osim podloge i broja dvostrukih pogrešaka za oba igrača). U sljedećem koraku izbacili smo svaki meč za kojeg svi relevantni podatci nisu definirani. Konačno dodali smo novi stupac u podatkovni okvir koji predstavlja ukupan broj dvostrukih grešaka za pojedini meč. Upravo je ukupan broj dvostrukih pogrešaka podatak kojeg želimo analizirati. Originalni podatkovni okvir sada razdvajamo na 4 podatkovna okvira, jedan za svaku vrstu podloge. Zaključili smo da je najbolji način za odrediti jeli meč igran na otvorenom ili zatvorenom terenu jest gledati na kojoj je podlozi igran. Procjenili smo da su podloge ilovine i trave karakteritične za vanjske terene dok tu tepisi i tvrde podloge karakteristični za zatvorene. Tako odredivši kategorizaciju spojili smo podatkovne okvire, nakon čega su nam preostala dva okvira, jedan za mečeve odigrane na otvorenom i jedan za one odigrane na zatvorenom terenu.
+
+```{r}
+fileList <- list.files(path = "./ATP-Matches/", pattern = "\\.csv", full.names = TRUE)
+combined_data <- data.frame()
+for(file in fileList){
+  temp <- read.csv(file, header = TRUE)
+  combined_data <- rbind(combined_data, temp)
+  
+}
+
+unique_tournaments <- unique(combined_data$tourney_name)
+
+combined_data <- subset(combined_data, select = c("surface", "l_df", "w_df"))
+
+combined_data <- na.omit(combined_data)
+
+combined_data$combined_df <- combined_data$l_df + combined_data$w_df
+
+hard_surface <- subset(combined_data, surface == "Hard")
+carpet_surface <- subset(combined_data, surface == "Carpet")
+clay_surface <-subset(combined_data, surface == "Clay")
+grass_surface <- subset(combined_data, surface == "Grass")
+
+outdoor_tournaments <- rbind(clay_surface,grass_surface)
+indoor_tournaments <- rbind(carpet_surface, hard_surface)
+```
+
+## Deskriptivna statistika
+
+Kako bismo dobili bolju intuiciju za distribucije varijabli, pogledajmo histograme mečeva 
+
+```{r, fig.show='asis'}
+
+
+par(mfrow = c(1, 2))
+
+hist(outdoor_tournaments$combined_df, border = "black", col = "lightblue", main = "Otvoreni tereni") 
+
+hist(indoor_tournaments$combined_df, border = "black", col = "lightblue", main = "Zatvoreni tereni")
+
+```
+
+Uočimo da je izgled dvaju histograma dosta sličan. Distribucija na prvi pogled izgleda kao eksponencijalna, međutim prvi stupac histograma kvari taj obrazac, pogledajmo izgled histograma jednom kad normaliziramo varijable kako bismo potencijalno dobili nešto smislenije.
+
+```{r}
+normalized_outdoor_tournaments <- scale(outdoor_tournaments$combined_df)
+normalized_indoor_tournaments <- scale(indoor_tournaments$combined_df)
+
+par(mfrow = c(1, 2))
+
+hist(normalized_outdoor_tournaments, border = "black", col = "lightblue", main = "Otvoreni tereni", )
+
+hist(normalized_indoor_tournaments, border = "black", col = "lightblue", main = "Zatvoreni tereni")
+```
+
+Kao što vidimo distribucija vrijednosti nije normalna niti odgovara nekoj opće poznatoj distribuciji. Distribucija je donekle simetrična i vidimo da je nagnuta na lijevu stranu. Ako nas zanima koliko blisko su ove dvije disribucije normalnoj možemo provjeriti upotrebom qq plota,
+
+```{r}
+par(mfrow = c(1, 2))
+qqnorm(normalized_indoor_tournaments)
+qqline(normalized_indoor_tournaments)
+
+
+qqnorm(normalized_outdoor_tournaments)
+qqline(normalized_outdoor_tournaments)
+```
+
+## Prediktivna statistika
+
+Jasno je podatci su zapravo izričito nenormalni stoga će se za testiranje morati koristiti neparametarska metoda koja nije osjetljiva na normalnost distribucija koje promatramo. Dodatno s obzirom da proučavamo sredine uzoraka čije distribucije ne znamo, znamo da naš neparametarski test mora biti pandan parametarskom t-testu. Jedan od testova kojeg možemo koristiti je Mann-Whitney-Wilcoxonov.  Mann-Whitney-Wilcoxonov općenito testira različitost distribucija no zbog načina na koji to izvodi prikladan je u ovom slučaju, odnosno reći će nam postoji li razlika u korist jedne od distribucija. Kao razinu značajnosti za naš statistički test uzeti ćemo standardnu razinu 0.05. Kao nultu hipotezu postaviti ćemo tezu: ne postoji razlika između broja dvostrukih grešaka između mečeva odigranih na otvorenom odnosno zatvorenom terenu. Kao alternativnu hipotezi postaviti ćemo da razlika postoji.
+
+
+```{r}
+
+wilcox.test(normalized_indoor_tournaments, normalized_outdoor_tournaments)
+
+```
+
+S obzirom da je p-vrijednost vrlo mala, na razini značajnosti od 0.05 možemo odbaciti nultu hipotezu u korist alternative te zaključiti da postoji značajna razlika u broju dvostrukih grešaka odigranih na otvorenom terenu u odnosu na one odigrane u zatvorenom terenu.
 
 # 3. istraživačko pitanje: Ima li razlike u broju serviranih asova na različitim podlogama?
 
@@ -531,6 +625,445 @@ Na temelju provedene statističke analize, možemo zaključiti kako postoji razl
 rm(aces, aces_all, aces_carpet, aces_clay, aces_grass, aces_hard)
 ```
 
+# 4. istraživačko pitanje: Kakva je veza između vrste terena i vjerojatnosti da će mečevi otići u 5. set?
+
+Ovo pitanje možemo riješiti pomoću hi-kvadrat testa homogenosti, s tim da moramo paziti da određene pretpostavke budu zadovoljene. Kako bismo to mogli provjeriti, prvo moramo izolirati željene podatke u obliku pogodnom za obradu. Za početak, idemo učitati sve potrebne podatke:
+
+```{r}
+matches <- fetch_data(1968:2023)
+matches <- matches[, c("surface", "score", "best_of")]
+```
+
+Zatim moramo eliminirati neregularne obzervacije: mečeve za koje ne znamo podlogu na kojoj su odigrani i/ili mečevi u kojima teoretski nije bilo moguće odigrati 5 setova (zbog samog formata natjecanja):
+
+```{r}
+matches %>% filter(!is.na(surface), best_of == 5) -> matches
+matches$best_of <- NULL
+```
+
+Sada dijelimo mečeve u 2 skupa: oni u kojima je odigrano svih 5 setova i oni u kojima nije (NAPOMENA: u ovom 2. slučaju pritom ignoriramo mečeve koji su otkazani zbog neprimjerenog ponašanja igrača, pogreške sudca u organizacijskom smislu, zbog loših vremenskih uvjeta i raznih drugih okolnosti koje "nisu vezane uz sam sport"):
+
+```{r}
+fiveSetMatchesIndices <- which(
+  !str_detect(matches$score, "[^0-9- ]") & str_count(matches$score, "-") == 5)
+fiveSetsMatches <- matches[fiveSetMatchesIndices, ]
+
+lessThanFiveSetsMatches <- matches[-fiveSetMatchesIndices, ]
+lessThanFiveSetsMatches <- filter(lessThanFiveSetsMatches, 
+                                  !str_detect(score, "(Played and unfinished|Played and abandoned|W/O|UNK|DEF|Default)"))
+```
+
+Sada gradimo kontingencijsku tablicu:
+
+```{r}
+fiveSetsMatches %>% group_by(surface) %>% summarise(count = n()) -> fiveSetsMatches
+lessThanFiveSetsMatches %>% group_by(surface) %>% summarise(count = n()) -> lessThanFiveSetsMatches
+
+data <- as.table(rbind(pull(fiveSetsMatches, count), pull(lessThanFiveSetsMatches, count)))
+colnames(data) <- c("Carpet", "Clay", "Grass", "Hard")
+rownames(data) <- c("5 sets played", "Less than 5 sets played")
+probabilities <- data[1, ] / data[2, ] 
+```
+
+Sada provodimo test i gledamo ispise:
+
+```{r}
+test <- chisq.test(data)
+test$observed   
+test$expected   
+test$residuals  
+test$stdres     
+test
+```
+
+S obzirom na to da je vrijednost svake ćelije frekvencija, da svaka obzervacija pripada jednoj ćeliji te da je očekivana vrijednost svake ćelije >= 5, možemo zaključiti da su rezultati ovog testa validni te da vjerojatnost da će meč otići u 5. set ne ovisi o vrsti terena (jako mala P-vrijednost: 2.2e-16)
+
+# 5. istraživačko pitanje: Možemo li procijeniti broj asova koje će igrač odservirati u tekućoj (zadnjoj dostupnoj sezoni) na temelju njegovih rezultata iz prethodnih sezona?
+
+## Previđanje broja aseva u trenutnoj sezoni na temelju podataka iz prethodnih sezona
+
+Statistika je jedna od glavnih znanosti koje se vežu uz sport. Jedan od najpoznatijih pojmova koji se vežu uz tenis je zasigurno pojam asa. Pojam označava uspješan servis pri kojem protivnik nije dotaknuo serviranu lopticu. Asevi su najsigurniji i gotovo najlakše dobiveni poeni u tenisu, gotovo poput zakucavanja u košarci.
+
+Postavlja se pitanje: možemo li uz pomoć programskog jezika R i statistika o ATP mečevima od 1968. do 2022. godine predvidjeti koliko će aseva određeni igrač imati u tekućoj sezoni?
+
+Pogledamo li dataframe s podacima nakon uvoza svih .csv datoteka, primjećujemo da se statistika o broju aseva po meču za pobjednika i gubitnika počela bilježiti tek 1991. godine. Stoga, kada uvozimo podatke, izuzimamo sve retke čija je vrijednost varijable w_ace ili l_ace jednaka NA.
+
+```{r}
+# Dohvaćanje popisa .csv datoteka u direktoriju
+tennis_files <- list.files(path = "./ATP-Matches/", pattern = "\\.csv$", full.names = TRUE)
+
+# Inicijalizacija praznog dataframe-a za čuvanje podataka
+tennis_dataset <- data.frame()
+
+# Iteracija kroz svaku .csv datoteku
+for (datoteka in tennis_files) {
+  # Učitavanje .csv datoteke
+  podaci <- read.csv(datoteka)
+  
+  # Uklanjanje redova s NA vrijednostima u w_ace i l_ace
+  podaci_bez_na <- podaci[complete.cases(podaci$w_ace, podaci$l_ace), ]
+  
+  # Dodavanje učitanih podataka u dataset
+  tennis_dataset <- rbind(tennis_dataset, podaci_bez_na)
+}
+
+```
+
+## Odabir potrebnih parametara
+
+Da bismo mogli kreirati model višestruke linearne regresije, moramo znati koje od dostupnih varijabli utječu na traženu zavisnu varijablu.
+
+Pogledamo li dostupne varijable iz zadanog dataseta, vidimo da možemo eliminirati podatke o identifikaciji meča, kao što su podaci o rundi turnira, rezultat, država iz koje igrač dolazi, način na koji je igrač došao na turnir...
+
+Zadržat ćemo podatke o performansu igrača u meču:
+
+-   broj aseva
+
+-   dvostruke pogreške
+
+-   uspješnih prvih i drugih servisa
+
+-   dobivenih prvih servisa
+
+-   serviranih gejmova
+
+-   odigranih *breakova* i spašenih *breakova*
+
+Informacije o visini i dominantnoj ruci igrača nećemo uzimati u obzir budući da, iako imaju utjecaj na servis igrača i samim time na broj aseva koje igrač postigne u karijeri, ostaju iste kroz karijeru pojedinca.
+
+```{r}
+# Kreirajte dataframe za pobjednike
+winners <- tennis_dataset[, c("winner_id", "winner_name", "tourney_id", "surface",  "winner_age",  "winner_rank",  "w_ace", "w_df", "w_svpt", "w_1stIn", "w_1stWon", "w_2ndWon", "w_SvGms", "w_bpSaved", "w_bpFaced", "minutes" )]
+
+colnames(winners) <- c("player_id", "name", "tour_id", "surface",  "age", "rank", "ace", "double_fault", "saved points", "1st serves made", "1st serves won", "2nd serves won", "served games", "saved breaks", "faced breaks", "minutes")
+
+# Kreirajte dataframe za gubitnike
+losers <- tennis_dataset[, c("loser_id", "loser_name", "tourney_id", "surface", "loser_age",  "loser_rank",  "l_ace", "l_df", "l_svpt", "l_1stIn", "l_1stWon", "l_2ndWon", "l_SvGms", "l_bpSaved", "l_bpFaced", "minutes" )]
+
+colnames(losers) <- c("player_id", "name", "tour_id", "surface", "age", "rank", "ace", "double_fault", "saved points", "1st serves made", "1st serves won", "2nd serves won", "served games", "saved breaks", "faced breaks", "minutes")
+
+all_players_stats <- rbind(winners, losers)
+
+stats_per_player <- split.data.frame(all_players_stats, all_players_stats[["name"]])
+```
+
+## Izbor igrača na temelju čijih se podata izrađuje model
+
+Nakon što smo napravili potrebne redukcije i transformacije na originalnom datasetu, dobili smo popis sa 2425 elemenata, tj. popis od 2425 igrača. Za svakog od njih imamo podatke o svim teniskim mečevima koje su odigrali u sklopu ATP turnira. Budući da ne možemo napraviti linearnu regresiju s malim brojem mečeva, izbacujemo sve igrače za koje imamo manje od 30 mečeva.
+
+```{r}
+reduced_stats_per_player <- Filter(function(dataset) nrow(dataset) >= 30, stats_per_player)
+```
+
+Nakon odabira igrača na temelju čijih podataka će se napraviti model linearne regresije, uvodimo novu varijablu "year" na temelju koje ćemo razdvojiti podatke u set za treniranje modela i set za testiranje modela.
+
+Kao primjer uzet ćemo podatke za Davida Ferrera. David Ferrer je odabran primarno zbog velikog broja dostupnih podataka.
+
+```{r}
+player_stats <- subset(reduced_stats_per_player$`David Ferrer`)
+```
+
+```{r, echo = FALSE}
+player_stats$year <- strtoi(substr(player_stats$tour_id, 1, 4))
+
+last_available_season <- max(player_stats$year)
+
+train_data <- subset(player_stats, year <= last_available_season)
+test_data <- subset(player_stats, year == last_available_season)
+```
+
+Nakon podijele dostupnog dataseta na dva podseta koji će poslužiti za "trening" modela i kasnije testiranje istog, prelazimo na identifikaciju vrijednosti koje uistinu utječu na servis i broj aseva.
+
+## Obrada parametara
+
+Započnimo s uvođenjem dummy varijabli za kategorijsku varijablu surface:
+
+```{r}
+#Dummy varijable za surface
+dummy_df <- data.frame(model.matrix(~ surface - 1, data = player_stats))
+```
+
+Prelazimo na ispitivanje koje od dostupnih varijabli uistinu utječu na broj aseva u sezoni. Pretpostavka je da će nam bitne biti isključivo varijable vezane uz uspješnost servisa, učestalost servisa, te uz vrstu podloge na kojoj se igra. Provjerimo također imaju li iskustvo i rang na ljestvici na kojem se igrač nalazi koorelaciju s brojem aseva u meču.
+
+```{r}
+linearnost_2serv <- lm(ace~train_data$`2nd serves won`, data = as.data.frame(train_data))
+```
+
+```{r, echo = FALSE}
+linearnost_godina <- lm(ace~train_data$age, data = as.data.frame(train_data))
+
+linearnost_ranga <- lm(ace~train_data$rank, data = as.data.frame(train_data))
+
+linearnost_dvostrukih <- lm(ace~train_data$double_fault, data = as.data.frame(train_data))
+
+linearnost_podloga <- lm(ace~train_data$surface, data = as.data.frame(train_data))
+
+linearnost_1serv <- lm(ace~train_data$`1st serves made`, data = as.data.frame(train_data))
+
+linearnost_1won <- lm(ace~train_data$`1st serves won`, data = as.data.frame(train_data))
+linearnost_svg <- lm(ace~train_data$`served games`, data = as.data.frame(train_data))
+```
+
+```{r}
+par(mfrow = c(2, 3))
+
+plot(player_stats$`2nd serves won`, player_stats$ace) 
+lines(player_stats$`2nd serves won`, linearnost_2serv$fitted.values, col='red')
+
+plot(player_stats$`1st serves made`, player_stats$ace) 
+lines(player_stats$`1st serves made`, linearnost_1serv$fitted.values, col='red')
+
+plot(player_stats$`1st serves won`, player_stats$ace) 
+lines(player_stats$`1st serves won`, linearnost_1won$fitted.values, col='red')
+
+par(mfrow = c(2, 3))
+
+plot(player_stats$age, player_stats$ace) 
+lines(player_stats$age, linearnost_godina$fitted.values, col='red')
+
+
+plot(player_stats$double_fault, player_stats$ace) 
+lines(player_stats$double_fault, linearnost_dvostrukih$fitted.values, col='red')
+
+plot(player_stats$`served games`, player_stats$ace) 
+lines(player_stats$`served games`, linearnost_svg$fitted.values, col='red')
+
+par(mfrow = c(1, 2))
+
+plot(player_stats$rank, player_stats$ace) 
+lines(player_stats$rank, linearnost_ranga$fitted.values, col='red')
+
+```
+
+Vidimo da, kao što je pretpostavljeno, podaci kao što su broj serviranih gejmova, broj uspješnih prvih servisa, broj osvojenih prvih servisa, broj drugih servisa, te dvostrukih pogrešaka imaju linearnu razdiobu u ovisnosti o broju aseva u meču.
+
+Na dijagramima za rang i godine nije vidljiva značajna koorelacija, tako da te dvije varijable izbacujemo iz modela.
+
+## Ispitivanje normalnosti reziduala
+
+Budući da je jedan od uvjeta linearne regresije normalnost reziduala, provjeravamo reziduale jednostavnih linearnih regresija za svaku od potrebnih varijabli. Idealno, to se može napraviti korištenjem Kolmogorov-Smirnovljevog testa, no on je osjetljiv na velike uzorke. Ovdje su već na početku eliminirani svi igrači koji imaju manje od 30 odigranih mečeva, tako da normalnost nikako nećemo testirati Kolmogorov-Smirnovljevim testom.
+
+Radi praktičnosti, koristimo histograme i provjeravamo oblikuju li reziduali zvonoliku krivulju:
+
+```{r, echo = FALSE}
+par(mfrow = c(2, 3))
+
+hist((linearnost_1serv$residuals), main = "Reziduali prvog servisa")
+
+hist((linearnost_1won$residuals), main = "Reziduali dobivenih prvih servisa")
+
+hist((linearnost_2serv$residuals), main = "Reziduali dobivenih drugih servisa")
+
+hist((linearnost_svg$residuals), main = "Reziduali serviranih gejmova")
+
+hist((linearnost_dvostrukih$residuals), main = "Reziduali dvostrukih pogrešaka")
+```
+
+Vidimo da sve varijable daju zvonoliku krivulju uz poneke "repiće". Njih tretiramo izbacivanjem outliera iz seta podataka. To će nam omogućiti dobivanje boljeg modela višestruke regresije.
+
+```{r, echo = FALSE}
+outlier_removal <- function(x, t = 1.5) {
+  q1 <- quantile(x, 0.25)
+  q3 <- quantile(x, 0.75)
+  iqr <- q3 - q1
+  LB <- q1 - t * iqr
+  UB <- q3 + t * iqr
+  outliers <- x < LB | x > UB
+  return(outliers)
+}
+
+used_vars <- c("1st serves made", "1st serves won", "2nd serves won", "double_fault", "served games")
+
+# Apply the function to each numeric variable
+outliers <- apply(player_stats[, used_vars], 2, outlier_removal)
+
+# Identify rows with outliers in at least one variable
+rows_with_outliers <- apply(outliers, 1, any)
+
+# Remove rows with outliers
+player_stats_no_outliers <- player_stats[!rows_with_outliers, ]
+
+train_data <- subset(player_stats_no_outliers, year <= last_available_season)
+test_data <- subset(player_stats_no_outliers, year == last_available_season)
+```
+
+```{r, echo = FALSE}
+linearnost_2serv <- lm(ace~train_data$`2nd serves won`, data = as.data.frame(train_data))
+
+linearnost_dvostrukih <- lm(ace~train_data$double_fault, data = as.data.frame(train_data))
+
+linearnost_podloga <- lm(ace~train_data$surface, data = as.data.frame(train_data))
+
+linearnost_1serv <- lm(ace~train_data$`1st serves made`, data = as.data.frame(train_data))
+
+linearnost_1won <- lm(ace~train_data$`1st serves won`, data = as.data.frame(train_data))
+
+linearnost_svg <- lm(ace~train_data$`served games`, data = as.data.frame(train_data))
+
+
+par(mfrow = c(2, 3))
+
+hist((linearnost_1serv$residuals), main = "Reziduali prvog servisa")
+
+hist((linearnost_1won$residuals), main = "Reziduali dobivenih prvih servisa")
+
+hist((linearnost_2serv$residuals), main = "Reziduali dobivenih drugih servisa")
+
+hist((linearnost_svg$residuals), main = "Reziduali serviranih gejmova")
+
+hist((linearnost_dvostrukih$residuals), main = "Reziduali dvostrukih pogrešaka")
+```
+
+## Kreiranje modela višestruke linearne regresije
+
+Na temelju selektiranih podataka izrađujemo model višestruke regresije. Nakon dobivanja modela, procjenjujemo kvalitetu istog. Osim uobičajenih parametara kvalitete testa koje dobivamo korištenjem funkcije summary(), za procjenu modela linearne regresije koristimo i metodu najmanjih kvadrata (SSE) i srednju kvadratnu pogrešku (MSE).
+
+```{r}
+# Kreiranje modela na temelju podataka iz trening-seta
+model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + train_data$`1st serves won` + train_data$double_fault + train_data$`2nd serves won`+ train_data$`served games` , data = as.data.frame(train_data))
+
+summary(model_igraca)
+
+# Procjena performansi modela na test setu
+predicted_aces_test <- predict(model_igraca, predicted_data = as.data.frame(test_data))
+mse <- mean((test_data$ace - predicted_aces_test)^2)
+sse <- ((test_data$ace - predicted_aces_test)^2)
+print(paste("Mean Squared Error (MSE):", mse))
+tail(paste("Squared Sum Error (SSE): ", sse))
+
+qqnorm(residuals(model_igraca))
+qqline(residuals(model_igraca))
+
+plot(density(residuals(model_igraca)), main = "Density Plot of Residuals")
+```
+
+### Pokazatelji kvalitete modela
+
+Da bi model bio dobar, vrijednosti SSE-a i MSE-a moraju biti što bliže nuli. Vidljivo je da, iako SSE uvelike varira u svojim vrijednostima, MSE ima relativno prihvatljiv rezultat od 7.71. Premda je ta brojka zadovoljavajuća, pogled na druge parametre modela ukazuje na činjenicu da odabrane nezavisne varijable nisu idealan pokazatelj kvalitete servisa igrača. Pogledamo li p-vrijednosti koeficijenata, vidimo da u slučaju Davida Ferrera možemo izbaciti dvostruke pogreške i broj serviranih gejmova iz modela.
+
+### Prilagođavanje odabira parametara
+
+Napravimo li model bez te dvije varijable, vidmo da se vrijednost MSE-a poveća na 9.16.
+
+Još jedan pokazatelj kvalitete modela je višestruki R kvadrat i prilagođeni R kvadrat. Oni ukazuju na kvalitetu izabranih prediktora u modelu. Raspon im je od 0 do 1, gdje 1 ukazuje na bolje odabrane prediktore i model koji dobro predviđa tražene vrijednosti. Prilagođeni R kvadrat kažnjava nepotrebno dodane prediktore. Uistinu, nakon uklanjanja dvostrukih pogrešaka i serviranih gejmova iz modela, dobivamo bolju vrijednost R kvadrata.Ta vrijednost niti nakon uklanjanja nepotrebnih prediktora nije dobra, što ukazuje na činjenicu da postoje faktori koje nismo uključili u model.
+
+```{r, echo = FALSE}
+train_data <- subset(player_stats, year <= last_available_season)
+to_test <- subset(player_stats, year == last_available_season)
+```
+
+```{r}
+# Kreiranje modela na trening setu
+model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + train_data$`1st serves won` +  train_data$`2nd serves won`, data = as.data.frame(train_data))
+
+summary(model_igraca)
+```
+
+```{r, echo = FALSE}
+# Evaluacija performansi modela na test setu
+predicted_aces_test <- predict(model_igraca, predicted_data = as.data.frame(test_data))
+mse <- mean((test_data$ace - predicted_aces_test)^2)
+sse <- ((test_data$ace - predicted_aces_test)^2)
+print(paste("Mean Squared Error (MSE) na test setu:", mse))
+tail(paste("Squared Sum Error (SSE) na test setu: ", sse))
+
+qqnorm(residuals(model_igraca))
+qqline(residuals(model_igraca))
+
+plot(density(residuals(model_igraca)), main = "Density Plot of Residuals")
+```
+
+Osim parametara modela, gledamo i normalnost reziduala. Pogledamo li dijagram gustoće reziduala, vidimo da dobivamo zvonoliku krivulju, što ukazuje da su reziduali normalno distribuirani.
+
+## Možemo li zaključiti da je linearnom regresijom moguće predvidjeti broj aseva u sezoni?
+
+Premda bismo mogli na temelju dosadašnjih saznanja mogli zaključiti da je moguće predvidjeti broj aseva koje će igrač odigrati u tekućoj sezoni, provođenjem izračuna na temelju podataka nekog drugog igrača, na primjer Novaka Đokovića, dolazimo do saznanja da do sada korišteni model ne funkcionira za sve igrače jednako:
+
+```{r}
+player_stats <- subset(reduced_stats_per_player$`Novak Djokovic`)
+```
+
+```{r, echo = FALSE}
+player_stats$year <- strtoi(substr(player_stats$tour_id, 1, 4))
+
+last_available_season <- max(player_stats$year)
+
+train_data <- subset(player_stats, year <= last_available_season)
+test_data <- subset(player_stats, year == last_available_season)
+
+outlier_removal <- function(x, t = 1.5) {
+  q1 <- quantile(x, 0.25)
+  q3 <- quantile(x, 0.75)
+  iqr <- q3 - q1
+  LB <- q1 - t * iqr
+  UB <- q3 + t * iqr
+  outliers <- x < LB | x > UB
+  return(outliers)
+}
+
+used_vars <- c("1st serves made", "1st serves won", "2nd serves won", "double_fault", "served games")
+
+# Apply the function to each numeric variable
+outliers <- apply(player_stats[, used_vars], 2, outlier_removal)
+
+# Identify rows with outliers in at least one variable
+rows_with_outliers <- apply(outliers, 1, any)
+
+# Remove rows with outliers
+player_stats_no_outliers <- player_stats[!rows_with_outliers, ]
+
+train_data <- subset(player_stats_no_outliers, year <= last_available_season)
+test_data <- subset(player_stats_no_outliers, year == last_available_season)
+```
+
+```{r}
+# Kreiranje modela na temelju podataka iz trening-seta
+model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + train_data$`1st serves won` + train_data$double_fault + train_data$`2nd serves won`+ train_data$`served games` , data = as.data.frame(train_data))
+
+summary(model_igraca)
+
+# Procjena performansi modela na test setu
+predicted_aces_test <- predict(model_igraca, predicted_data = as.data.frame(test_data))
+mse <- mean((test_data$ace - predicted_aces_test)^2)
+sse <- ((test_data$ace - predicted_aces_test)^2)
+print(paste("Mean Squared Error (MSE):", mse))
+tail(paste("Squared Sum Error (SSE): ", sse))
+
+qqnorm(residuals(model_igraca))
+qqline(residuals(model_igraca))
+
+plot(density(residuals(model_igraca)), main = "Dijagram gustoće reziduala")
+```
+
+Pogledamo li sažetak modela za Novaka Đokovića, vidimo da kod njega možemo odbaciti dvostruke pogreške iz modela, dok je broj serviranih gejmova vrlo značajan za broj aseva. Ukanjanjem tog prediktora blago povećamo vrijednost R kvadrata i MSE-a.
+
+```{r}
+# Kreiranje modela na temelju podataka iz trening-seta
+model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + train_data$`1st serves won` + train_data$`2nd serves won`+ train_data$`served games` , data = as.data.frame(train_data))
+
+summary(model_igraca)
+```
+
+```{r, echo = FALSE}
+# Procjena performansi modela na test setu
+predicted_aces_test <- predict(model_igraca, predicted_data = as.data.frame(test_data))
+mse <- mean((test_data$ace - predicted_aces_test)^2)
+sse <- ((test_data$ace - predicted_aces_test)^2)
+print(paste("Mean Squared Error (MSE):", mse))
+tail(paste("Squared Sum Error (SSE): ", sse))
+
+qqnorm(residuals(model_igraca))
+qqline(residuals(model_igraca))
+
+plot(density(residuals(model_igraca)), main = "Dijagram gustoće reziduala")
+```
+
+## Zaključak
+
+Gledajući dobivene rezultate, zaključuje se da je korištenjem linearne regresije moguće dobiti broj aseva koje će igrač odservirati u tekućoj sezoni, no s relativno malom sigurnošću. U modelima dobivenima u ovom zadatku, ta se sigurnost kreće između 30 i 36 posto. Evidendno je da je model na dobrom tragu, no postoje "skriveni" prediktori koji nam nisu dostupni iz dobivenih podataka.
+
+Pri kreiranju modela potrebno je analizirati svakog igrača zasebno. Pokazano je da prediktori koji su značajni za jednog igrača nemaju nikakvog utjecaja na broj aseva drugog, i samo narušavaju kvalitetu kreiranog modela.
+
 # 6. istrazivačko pitanje: U kojoj je mjeri moguće predvidjeti ishod teniskog meča?
 
 ## Uvod
@@ -601,7 +1134,7 @@ plot <- ggplot(data, aes(x = age, color = status)) +
 plot
 ```
 
-Sada ćemo izbaciti neregularne obzervacije:
+Iz priloženog možemo vidjeti da je naša intuicija bila na dobrom putu: svaka od prikazanih varijabli bi mogla utjecati na ishod meča. Sada ćemo izbaciti neregularne obzervacije:
 
 ```{r}
 faultyDataMatchesIndices <- which(
@@ -739,7 +1272,7 @@ playerDifference$won <- 0
 playerDifference[winnerIndices, "won"] <- 1
 playerDifference$matchId <- NULL
 
-playerDifference
+head(playerDifference, 5)
 ```
 
 Još je samo potrebno normalizirati podatke:
@@ -750,7 +1283,7 @@ normalize <- function(x) {
 }
 playerDifference <- as.data.frame(lapply(playerDifference, normalize))
 
-playerDifference
+head(playerDifference, 5)
 ```
 
 ## Treniranje modela, predikcija i zaključak
@@ -812,59 +1345,6 @@ print(paste('Accuracy', 1 - misClasificError))
 ```
 
 Sada nam je preciznost još manja ("Dikod uđe, dikod ne uđe" - Mate Baturina). Međutim, unatoč tome možemo zaključiti da je itekako moguće predvidjeti ishod teniskog meča pomoću logističke regresije.
-
-# 4. istraživačko pitanje: Kakva je veza između vrste terena i vjerojatnosti da će mečevi otići u 5. set?
-
-Ovo pitanje možemo riješiti pomoću hi-kvadrat testa homogenosti, s tim da moramo paziti da određene pretpostavke budu zadovoljene. Kako bismo to mogli provjeriti, prvo moramo izolirati željene podatke u obliku pogodnom za obradu. Za početak, idemo učitati sve potrebne podatke:
-
-```{r}
-matches <- fetch_data(1968:2023)
-matches <- matches[, c("surface", "score", "best_of")]
-```
-
-Zatim moramo eliminirati neregularne obzervacije: mečeve za koje ne znamo podlogu na kojoj su odigrani i/ili mečevi u kojima teoretski nije bilo moguće odigrati 5 setova (zbog samog formata natjecanja):
-
-```{r}
-matches %>% filter(!is.na(surface), best_of == 5) -> matches
-matches$best_of <- NULL
-```
-
-Sada dijelimo mečeve u 2 skupa: oni u kojima je odigrano svih 5 setova i oni u kojima nije (NAPOMENA: u ovom 2. slučaju pritom ignoriramo mečeve koji su otkazani zbog neprimjerenog ponašanja igrača, pogreške sudca u organizacijskom smislu, zbog loših vremenskih uvjeta i raznih drugih okolnosti koje "nisu vezane uz sam sport"):
-
-```{r}
-fiveSetMatchesIndices <- which(
-  !str_detect(matches$score, "[^0-9- ]") & str_count(matches$score, "-") == 5)
-fiveSetsMatches <- matches[fiveSetMatchesIndices, ]
-
-lessThanFiveSetsMatches <- matches[-fiveSetMatchesIndices, ]
-lessThanFiveSetsMatches <- filter(lessThanFiveSetsMatches, 
-                                  !str_detect(score, "(Played and unfinished|Played and abandoned|W/O|UNK|DEF|Default)"))
-```
-
-Sada gradimo kontingencijsku tablicu:
-
-```{r}
-fiveSetsMatches %>% group_by(surface) %>% summarise(count = n()) -> fiveSetsMatches
-lessThanFiveSetsMatches %>% group_by(surface) %>% summarise(count = n()) -> lessThanFiveSetsMatches
-
-data <- as.table(rbind(pull(fiveSetsMatches, count), pull(lessThanFiveSetsMatches, count)))
-colnames(data) <- c("Carpet", "Clay", "Grass", "Hard")
-rownames(data) <- c("5 sets played", "Less than 5 sets played")
-probabilities <- data[1, ] / data[2, ] 
-```
-
-Sada provodimo test i gledamo ispise:
-
-```{r}
-test <- chisq.test(data)
-test$observed   
-test$expected   
-test$residuals  
-test$stdres     
-test
-```
-
-S obzirom na to da je vrijednost svake ćelije frekvencija, da svaka obzervacija pripada jednoj ćeliji te da je očekivana vrijednost svake ćelije >= 5, možemo zaključiti da su rezultati ovog testa validni te da vjerojatnost da će meč otići u 5. set ne ovisi o vrsti terena (jako mala P-vrijednost: 2.2e-16)
 
 # 7. istraživačko pitanje: Postoji li razlika u broju odigranih aseva između igrača koji su osvojili Grand Slam naslov i onih koji nisu?
 
