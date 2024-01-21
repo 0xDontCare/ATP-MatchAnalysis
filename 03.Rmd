@@ -61,33 +61,14 @@ rm(df_list, file_name, df, i, years)
 
 ## Prilagodba tipova podataka
 
-Nakon učitavanja podataka, potrebno je ispraviti tipove podataka za neke stupce. Ti stupci su:
+Nakon učitavanja podataka, potrebno je ispraviti tip podataka za stupac `surface` koji je potreban kod istraživanja.
 
-* `surface` - podloga na kojoj se igrao meč: trava, zemlja, tvrda podloga, tepih (eng. grass, clay, hard, carpet)
-* `tourney_level` - razina turnira: Grand Slam, ATP Finals, ATP Masters 1000, ATP Tour, ATP Challengers
-* `tourney_date` - datum održavanja turnira
-* `winner_hand` - ruka s kojom je pobjednik igrao meč: desnoruk, lijevoruk, ambidekster, nepoznato (eng. right-handed ("R"), left-handed ("L"), ambidextrous ("A"), unknown ("U"))
-* `loser_hand` - ruka s kojom je gubitnik igrao meč (definirano isto kao i za winner_hand)
-
-Prilagodba tipova podataka je prikazana u sljedećem kodu:
+Prilagodba je prikazana u sljedećem kodu:
 
 ```{r}
 matches$surface <- factor(
   matches$surface,
   levels = c("Grass", "Clay", "Hard", "Carpet")
-)
-matches$tourney_level <- factor(
-  matches$tourney_level,
-  levels = c("F", "A", "D", "M", "G")
-)
-matches$tourney_date <- ymd(matches$tourney_date)
-matches$winner_hand <- factor(
-  matches$winner_hand,
-  levels = c("R", "L", "A", "U")
-)
-matches$loser_hand <- factor(
-  matches$loser_hand,
-  levels = c("R", "L", "A", "U")
 )
 ```
 
