@@ -142,9 +142,11 @@ Kako bismo dobili bolju intuiciju za distribucije varijabli, pogledajmo histogra
 
 par(mfrow = c(1, 2))
 
-hist(outdoor_tournaments$combined_df, border = "black", col = "lightblue", main = "Otvoreni tereni") 
+hist(outdoor_tournaments$combined_df, border = "black", col = "lightblue", 
+     main = "Otvoreni tereni") 
 
-hist(indoor_tournaments$combined_df, border = "black", col = "lightblue", main = "Zatvoreni tereni")
+hist(indoor_tournaments$combined_df, border = "black", col = "lightblue", 
+     main = "Zatvoreni tereni")
 
 ```
 
@@ -156,9 +158,11 @@ normalized_indoor_tournaments <- scale(indoor_tournaments$combined_df)
 
 par(mfrow = c(1, 2))
 
-hist(normalized_outdoor_tournaments, border = "black", col = "lightblue", main = "Otvoreni tereni", )
+hist(normalized_outdoor_tournaments, border = "black", col = "lightblue", 
+     main = "Otvoreni tereni", )
 
-hist(normalized_indoor_tournaments, border = "black", col = "lightblue", main = "Zatvoreni tereni")
+hist(normalized_indoor_tournaments, border = "black", col = "lightblue", 
+     main = "Zatvoreni tereni")
 ```
 
 Kao što vidimo distribucija vrijednosti nije normalna niti odgovara nekoj opće poznatoj distribuciji. Distribucija je donekle simetrična i vidimo da je nagnuta na lijevu stranu. Ako nas zanima koliko blisko su ove dvije disribucije normalnoj možemo provjeriti upotrebom qq plota,
@@ -630,17 +634,26 @@ fiveSetMatchesIndices <- which(
 fiveSetsMatches <- matches[fiveSetMatchesIndices, ]
 
 lessThanFiveSetsMatches <- matches[-fiveSetMatchesIndices, ]
-lessThanFiveSetsMatches <- filter(lessThanFiveSetsMatches, 
-                                  !str_detect(score, "(Played and unfinished|Played and abandoned|W/O|UNK|DEF|Default)"))
+lessThanFiveSetsMatches <- 
+  filter(lessThanFiveSetsMatches, 
+  !str_detect(score, 
+              "(Played and unfinished|Played and abandoned|W/O|UNK|DEF|Default)"
+              ))
 ```
 
 Sada gradimo kontingencijsku tablicu:
 
 ```{r}
-fiveSetsMatches %>% group_by(surface) %>% summarise(count = n()) -> fiveSetsMatches
-lessThanFiveSetsMatches %>% group_by(surface) %>% summarise(count = n()) -> lessThanFiveSetsMatches
+fiveSetsMatches %>% 
+  group_by(surface) %>% 
+  summarise(count = n()) -> fiveSetsMatches
+lessThanFiveSetsMatches %>% 
+  group_by(surface) %>% 
+  summarise(count = n()) -> lessThanFiveSetsMatches
 
-data <- as.table(rbind(pull(fiveSetsMatches, count), pull(lessThanFiveSetsMatches, count)))
+data <- as.table(
+  rbind(pull(fiveSetsMatches, count), pull(lessThanFiveSetsMatches, count))
+)
 colnames(data) <- c("Carpet", "Clay", "Grass", "Hard")
 rownames(data) <- c("5 sets played", "Less than 5 sets played")
 probabilities <- data[1, ] / data[2, ] 
@@ -671,7 +684,8 @@ Pogledamo li dataframe s podacima nakon uvoza svih .csv datoteka, primjećujemo 
 
 ```{r}
 # Dohvaćanje popisa .csv datoteka u direktoriju
-tennis_files <- list.files(path = "./ATP-Matches/", pattern = "\\.csv$", full.names = TRUE)
+tennis_files <- list.files(path = "./ATP-Matches/", 
+                           pattern = "\\.csv$", full.names = TRUE)
 
 # Inicijalizacija praznog dataframe-a za čuvanje podataka
 tennis_dataset <- data.frame()
@@ -714,14 +728,26 @@ Informacije o visini i dominantnoj ruci igrača nećemo uzimati u obzir budući 
 
 ```{r}
 # Kreirajte dataframe za pobjednike
-winners <- tennis_dataset[, c("winner_id", "winner_name", "tourney_id", "surface",  "winner_age",  "winner_rank",  "w_ace", "w_df", "w_svpt", "w_1stIn", "w_1stWon", "w_2ndWon", "w_SvGms", "w_bpSaved", "w_bpFaced", "minutes" )]
+winners <- tennis_dataset[, c("winner_id", "winner_name", "tourney_id", 
+                              "surface","winner_age",  "winner_rank",  "w_ace", 
+                              "w_df", "w_svpt", "w_1stIn", "w_1stWon", "w_2ndWon", 
+                              "w_SvGms", "w_bpSaved", "w_bpFaced", "minutes" )]
 
-colnames(winners) <- c("player_id", "name", "tour_id", "surface",  "age", "rank", "ace", "double_fault", "saved points", "1st serves made", "1st serves won", "2nd serves won", "served games", "saved breaks", "faced breaks", "minutes")
+colnames(winners) <- c("player_id", "name", "tour_id", "surface",  "age", 
+                       "rank", "ace", "double_fault", "saved points", 
+                       "1st serves made", "1st serves won", "2nd serves won", 
+                       "served games", "saved breaks", "faced breaks", "minutes")
 
 # Kreirajte dataframe za gubitnike
-losers <- tennis_dataset[, c("loser_id", "loser_name", "tourney_id", "surface", "loser_age",  "loser_rank",  "l_ace", "l_df", "l_svpt", "l_1stIn", "l_1stWon", "l_2ndWon", "l_SvGms", "l_bpSaved", "l_bpFaced", "minutes" )]
+losers <- tennis_dataset[, c("loser_id", "loser_name", "tourney_id", "surface", 
+                             "loser_age",  "loser_rank",  "l_ace", "l_df", 
+                             "l_svpt", "l_1stIn", "l_1stWon", "l_2ndWon", 
+                             "l_SvGms", "l_bpSaved", "l_bpFaced", "minutes" )]
 
-colnames(losers) <- c("player_id", "name", "tour_id", "surface", "age", "rank", "ace", "double_fault", "saved points", "1st serves made", "1st serves won", "2nd serves won", "served games", "saved breaks", "faced breaks", "minutes")
+colnames(losers) <- c("player_id", "name", "tour_id", "surface", "age", "rank", 
+                      "ace", "double_fault", "saved points", "1st serves made", 
+                      "1st serves won", "2nd serves won", "served games", 
+                      "saved breaks", "faced breaks", "minutes")
 
 all_players_stats <- rbind(winners, losers)
 
@@ -733,7 +759,8 @@ stats_per_player <- split.data.frame(all_players_stats, all_players_stats[["name
 Nakon što smo napravili potrebne redukcije i transformacije na originalnom datasetu, dobili smo popis sa 2425 elemenata, tj. popis od 2425 igrača. Za svakog od njih imamo podatke o svim teniskim mečevima koje su odigrali u sklopu ATP turnira. Budući da ne možemo napraviti linearnu regresiju s malim brojem mečeva, izbacujemo sve igrače za koje imamo manje od 30 mečeva.
 
 ```{r}
-reduced_stats_per_player <- Filter(function(dataset) nrow(dataset) >= 30, stats_per_player)
+reduced_stats_per_player <- 
+  Filter(function(dataset) nrow(dataset) >= 30, stats_per_player)
 ```
 
 Nakon odabira igrača na temelju čijih podataka će se napraviti model linearne regresije, uvodimo novu varijablu "year" na temelju koje ćemo razdvojiti podatke u set za treniranje modela i set za testiranje modela.
@@ -901,7 +928,9 @@ Na temelju selektiranih podataka izrađujemo model višestruke regresije. Nakon 
 
 ```{r}
 # Kreiranje modela na temelju podataka iz trening-seta
-model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + train_data$`1st serves won` + train_data$double_fault + train_data$`2nd serves won`+ train_data$`served games` , data = as.data.frame(train_data))
+model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + 
+                     train_data$`1st serves won` + train_data$double_fault + 
+                     train_data$`2nd serves won`+ train_data$`served games` , data = as.data.frame(train_data))
 
 summary(model_igraca)
 
@@ -935,7 +964,9 @@ to_test <- subset(player_stats, year == last_available_season)
 
 ```{r}
 # Kreiranje modela na trening setu
-model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + train_data$`1st serves won` +  train_data$`2nd serves won`, data = as.data.frame(train_data))
+model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + 
+                     train_data$`1st serves won` +  
+                     train_data$`2nd serves won`, data = as.data.frame(train_data))
 
 summary(model_igraca)
 ```
@@ -982,7 +1013,8 @@ outlier_removal <- function(x, t = 1.5) {
   return(outliers)
 }
 
-used_vars <- c("1st serves made", "1st serves won", "2nd serves won", "double_fault", "served games")
+used_vars <- c("1st serves made", "1st serves won", "2nd serves won", 
+               "double_fault", "served games")
 
 # Apply the function to each numeric variable
 outliers <- apply(player_stats[, used_vars], 2, outlier_removal)
@@ -999,12 +1031,15 @@ test_data <- subset(player_stats_no_outliers, year == last_available_season)
 
 ```{r}
 # Kreiranje modela na temelju podataka iz trening-seta
-model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + train_data$`1st serves won` + train_data$double_fault + train_data$`2nd serves won`+ train_data$`served games` , data = as.data.frame(train_data))
+model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + 
+                     train_data$`1st serves won` + train_data$double_fault + 
+                     train_data$`2nd serves won`+ train_data$`served games` , data = as.data.frame(train_data))
 
 summary(model_igraca)
 
 # Procjena performansi modela na test setu
-predicted_aces_test <- predict(model_igraca, predicted_data = as.data.frame(test_data))
+predicted_aces_test <- predict(model_igraca, 
+                               predicted_data = as.data.frame(test_data))
 mse <- mean((test_data$ace - predicted_aces_test)^2)
 sse <- ((test_data$ace - predicted_aces_test)^2)
 print(paste("Mean Squared Error (MSE):", mse))
@@ -1020,14 +1055,17 @@ Pogledamo li sažetak modela za Novaka Đokovića, vidimo da kod njega možemo o
 
 ```{r}
 # Kreiranje modela na temelju podataka iz trening-seta
-model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made` + train_data$`1st serves won` + train_data$`2nd serves won`+ train_data$`served games` , data = as.data.frame(train_data))
+model_igraca <- lm(ace ~ train_data$surface + train_data$`1st serves made`+ 
+                     train_data$`1st serves won` + train_data$`2nd serves won`+ 
+                     train_data$`served games` , data = as.data.frame(train_data))
 
 summary(model_igraca)
 ```
 
 ```{r, echo = FALSE}
 # Procjena performansi modela na test setu
-predicted_aces_test <- predict(model_igraca, predicted_data = as.data.frame(test_data))
+predicted_aces_test <- predict(model_igraca, 
+                               predicted_data = as.data.frame(test_data))
 mse <- mean((test_data$ace - predicted_aces_test)^2)
 sse <- ((test_data$ace - predicted_aces_test)^2)
 print(paste("Mean Squared Error (MSE):", mse))
@@ -1150,7 +1188,8 @@ checkIfValidForProcessing = function(match) {
   playersCandidates <-  c(winnersCandidates, losersCandidates)
   
   validPlayersIndices <-  table(playersCandidates) >= 10
-  table(playersCandidates)[validPlayersIndices] %>% names %>% as.numeric -> validPlayers
+  table(playersCandidates)[validPlayersIndices] %>% 
+    names %>% as.numeric -> validPlayers
   
   if (winnerId %in% validPlayers && loserId %in% validPlayers) return (TRUE)
   
@@ -1211,7 +1250,8 @@ calculateValidMatchesStats <- function(x) {
   avgDf <- mean(pastMatches$df, na.rm = T)
 
   svptWonPercentage <- ifelse(pastMatches$svpt == 0, NA, 
-                              (pastMatches$firstWon + pastMatches$secondWon) / pastMatches$svpt)
+                              (pastMatches$firstWon + 
+                                 pastMatches$secondWon) / pastMatches$svpt)
   avgSvptWonPercentage <- mean(svptWonPercentage, na.rm = T)
   
   bpSavedPercentage <- ifelse(pastMatches$bpFaced == 0, NA, 
@@ -1230,7 +1270,9 @@ calculateValidMatchesStats <- function(x) {
 
 validMatchesWinnerData <- apply(validMatchesWinnerInfo, 1, calculateValidMatchesStats)
 validMatchesWinnerData <- as.data.frame(t(validMatchesWinnerData))
-colnames(validMatchesWinnerData) <- c("matchId", "height", "age", "rank", "avgAce", "avgDf", "avgBpSavedPercentage", "avgSvptWonPercentage", "winrate", "lastTenWinrate")
+colnames(validMatchesWinnerData) <- c("matchId", "height", "age", "rank", 
+                                      "avgAce", "avgDf", "avgBpSavedPercentage", 
+                                      "avgSvptWonPercentage", "winrate", "lastTenWinrate")
 
 validMatchesLoserData <- apply(validMatchesLoserInfo, 1, calculateValidMatchesStats)
 validMatchesLoserData <- as.data.frame(t(validMatchesLoserData))
@@ -1301,7 +1343,7 @@ misClasificError <- mean(predictions != testingSet$won)
 print(paste('Accuracy', 1 - misClasificError))
 ```
 
-Preciznost od 66.3973% na skupu podataka od 6931 obzervacija. Ajmo sada opet provesti logističku regresiju, ali bez prethodno spomenutih varijabli:
+Preciznost od oko 66% na skupu podataka od 6931 obzervacija. Ajmo sada opet provesti logističku regresiju, ali bez prethodno spomenutih varijabli:
 
 ```{r}
 set.seed(123)
@@ -1325,7 +1367,7 @@ misClasificError <- mean(predictions != testingSet$won)
 print(paste('Accuracy', 1 - misClasificError))
 ```
 
-Sada nam je preciznost još manja ("Dikod uđe, dikod ne uđe" - Mate Baturina). Međutim, unatoč tome možemo zaključiti da je itekako moguće predvidjeti ishod teniskog meča pomoću logističke regresije.
+Preciznost se nije znatno promijenila ("Dikod uđe, dikod ne uđe" - Mate Baturina). Međutim, unatoč tome možemo zaključiti da je itekako moguće predvidjeti ishod teniskog meča pomoću logističke regresije.
 
 # 7. istraživačko pitanje: Postoji li razlika u broju odigranih aseva između igrača koji su osvojili Grand Slam naslov i onih koji nisu?
 
